@@ -66,11 +66,11 @@ and accept the agreement. Nothing below can be issued until that is done.
    download the `.p8` once.
 3. Local notarization profile (enables `scripts/release.sh` to notarize):
    ```bash
-   xcrun notarytool store-credentials jot-notary \
+   xcrun notarytool store-credentials athena-notary \
      --key AuthKey_XXXX.p8 --key-id KEYID --issuer ISSUER-UUID
    ```
 4. Already done in `project.yml`: `DEVELOPMENT_TEAM` is the personal team and
-   `PRODUCT_BUNDLE_IDENTIFIER` is `com.ammaar.jot`. ⚠️ Do not change either after
+   `PRODUCT_BUNDLE_IDENTIFIER` is `com.ammaar.athena`. ⚠️ Do not change either after
    shipping — TCC keys permissions to team + bundle id, so a change silently
    revokes accessibility and microphone access for every existing user, who then
    has to re-grant both.
@@ -82,7 +82,7 @@ and accept the agreement. Nothing below can be issued until that is done.
 ```
 
 Produces `build/release/Jot-<version>.dmg`, notarized + stapled when the
-`jot-notary` profile exists. Verify with `spctl -a -t exec -vv` on the app.
+`athena-notary` profile exists. Verify with `spctl -a -t exec -vv` on the app.
 
 No identity variable: signing is cloud-managed through the Apple account Xcode is
 signed into, so `release.sh` archives and exports rather than calling `codesign`

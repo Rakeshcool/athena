@@ -1,6 +1,6 @@
 <div align="center">
 
-# Jot for Windows
+# Athena for Windows
 
 **Hold a key. Speak. It types — and it never leaves your machine.**
 
@@ -29,7 +29,7 @@ key up ─▶ commit ─▶ final transcript ─▶ LLM cleanup ─▶ validatio
 ```
 
 It follows a change of mind: say *"let's meet at 1pm — actually, no, make it
-2pm"* and Jot writes **"Let's meet at 2pm."** That is the whole pitch, and you
+2pm"* and Athena writes **"Let's meet at 2pm."** That is the whole pitch, and you
 can watch it happen live in the HUD while you're still talking.
 
 ## Requirements
@@ -49,23 +49,23 @@ local setup; it never downloads models). Everything is localhost-only.
 
 ```powershell
 # from the repo root
-dotnet build JotWin.sln -c Debug
+dotnet build Athena.sln -c Debug
 
 # launch (tray app — a pill appears when you dictate)
-src\Jot.App\bin\Debug\net10.0-windows10.0.19041.0\Jot.exe
+src\Athena.App\bin\Debug\net10.0-windows10.0.19041.0\Athena.exe
 ```
 
 Or in one step during development:
 
 ```powershell
-dotnet run --project src/Jot.App
+dotnet run --project src/Athena.App
 ```
 
 Run the tests (109 unit tests + 5 live integration tests; live tests
 auto-skip when the local servers are down):
 
 ```powershell
-dotnet test JotWin.sln
+dotnet test Athena.sln
 ```
 
 ## The gestures
@@ -75,10 +75,10 @@ dotnet test JotWin.sln
 | **Hold `` ` ``** | Records while held — live text streams into the HUD. Release and the text lands at your cursor. |
 | **`` ` `` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `` ` `` to finish. |
 | **`Esc`** | Cancels; buffered audio is discarded server-side. |
-| **Ctrl/Alt/Win + `` ` ``** | Passes through to apps untouched — only the bare key belongs to Jot. |
+| **Ctrl/Alt/Win + `` ` ``** | Passes through to apps untouched — only the bare key belongs to Athena. |
 
 The key is rebindable to any virtual key code in
-`%APPDATA%\Jot\settings.json` (`HotkeyVk`, e.g. `0xC0` = backtick).
+`%APPDATA%\Athena\settings.json` (`HotkeyVk`, e.g. `0xC0` = backtick).
 
 ## The pipeline
 
@@ -117,8 +117,8 @@ without losing words:
 two localhost sockets: ASR on `127.0.0.1:8080`, LLM on `127.0.0.1:3000`. No
 account, no API key, no telemetry, no analytics, no screenshots, no keystroke
 logging. Every line of code that touches the network is in
-[`src/Jot.Core/Clients/`](src/Jot.Core/Clients/) and you can read all of it.
-Audio files live under `%APPDATA%\Jot\sessions\` and are pruned (transcripts
+[`src/Athena.Core/Clients/`](src/Athena.Core/Clients/) and you can read all of it.
+Audio files live under `%APPDATA%\Athena\sessions\` and are pruned (transcripts
 kept, audio dropped) after the retention window you set.
 
 ## Features
@@ -139,14 +139,14 @@ kept, audio dropped) after the retention window you set.
   recovered sessions surface via tray balloon.
 - **History** — full-text search (FTS5), raw/cleaned toggle, audio playback,
   per-row Copy/Retry/Delete. Retention prunes aged audio, never transcripts.
-- **Earcons** — the Jot start/stop/success/error/lock sounds, synthesized at
+- **Earcons** — the Athena start/stop/success/error/lock sounds, synthesized at
   startup (no sound files shipped).
 - **Settings** — server URLs with live connection test, language picker,
   cleanup/sounds toggles, retention, launch-at-login (Startup-folder shortcut).
 
 ## Configuration
 
-Everything lives in `%APPDATA%\Jot\`:
+Everything lives in `%APPDATA%\Athena\`:
 
 | File | What |
 |---|---|
@@ -154,7 +154,7 @@ Everything lives in `%APPDATA%\Jot\`:
 | `dictionary.json` | terms + replacement rules |
 | `history.db` | SQLite/FTS5 history of every session |
 | `sessions\` | per-session audio (pruned by retention) |
-| `logs\jot.log` | the diagnostic trail — every state transition lands here |
+| `logs\athena.log` | the diagnostic trail — every state transition lands here |
 
 Handy `settings.json` keys:
 
@@ -172,9 +172,9 @@ Handy `settings.json` keys:
 ## Project layout
 
 ```
-JotWin.sln
+Athena.sln
 src/
-  Jot.Core/            the engine — headless, UI-free, fully unit-tested
+  Athena.Core/            the engine — headless, UI-free, fully unit-tested
     DictationStateMachine.cs   pure session-lifecycle transition function
     HotkeyProcessor.cs         hold/tap/lock/cancel grammar (pure)
     ValidationGate.cs          the never-insert-garbage gate (pure)
@@ -187,7 +187,7 @@ src/
       RealtimeAsrClient.cs     live WebSocket streaming (partials/finals)
       LocalAsrClient.cs        file endpoint (fallback + retry path)
       LocalLlmClient.cs        OpenAI-compatible cleanup client (reasoning-aware)
-  Jot.App/             the Windows shell
+  Athena.App/             the Windows shell
     DictationCoordinator.cs    orchestrates a dictation flight end-to-end
     Audio/WavRecorder.cs       WASAPI capture + live PCM16 tap + transcode
     Interop/KeyboardHook.cs    WH_KEYBOARD_LL push-to-talk hook
@@ -195,7 +195,7 @@ src/
     Hud/HudPillWindow.cs       the non-activating HUD pill + live bubble
     Sound/EarconPlayer.cs      synthesized earcons
     Windows/                   tray, main, Settings, History windows
-tests/Jot.Core.Tests/  109 tests: pure-logic suites + 5 live integration tests
+tests/Athena.Core.Tests/  109 tests: pure-logic suites + 5 live integration tests
 scripts/               dev probes (python, uv-run)
 docs/
   WINDOWS_PORT.md      port notes: what was mapped, what was trimmed
@@ -207,11 +207,11 @@ docs/
 
 | Symptom | First look |
 |---|---|
-| Nothing pastes, text only in History | `%APPDATA%\Jot\logs\jot.log` — every transition is logged; if the last line is `Inserting` and the app died, it's the elevated-window guard (text is in the clipboard instead) |
-| Key press does nothing | Is Jot in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does `` ` `` type a backtick — meaning another app owns a lower-level hook? |
+| Nothing pastes, text only in History | `%APPDATA%\Athena\logs\athena.log` — every transition is logged; if the last line is `Inserting` and the app died, it's the elevated-window guard (text is in the clipboard instead) |
+| Key press does nothing | Is Athena in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does `` ` `` type a backtick — meaning another app owns a lower-level hook? |
 | Streamed text never appears | Check `StreamingEnabled` in settings; the log shows `realtime connect failed` when the server lacks the endpoint (batch mode still works) |
 | Transcription fails | Server up? `curl http://127.0.0.1:8080/health` and `curl http://127.0.0.1:3000/health` |
-| App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Jot.exe` first (file locks) |
+| App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Athena.exe` first (file locks) |
 
 ## Acknowledgements
 

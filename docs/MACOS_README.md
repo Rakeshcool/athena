@@ -156,11 +156,11 @@ Useful while hacking:
 
 ```bash
 # every surface is reachable headlessly
-open "jot://settings/about"      # or /general /dictation /privacy /advanced
-open "jot://history"  "jot://dictionary"  "jot://onboarding/5"
+open "athena://settings/about"      # or /general /dictation /privacy /advanced
+open "athena://history"  "athena://dictionary"  "athena://onboarding/5"
 
 # watch it work
-log show --last 5m --info --predicate 'subsystem == "com.ammaar.jot"'
+log show --last 5m --info --predicate 'subsystem == "com.ammaar.athena"'
 ```
 
 Transcript text is logged as `private` and never appears in those logs.

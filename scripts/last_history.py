@@ -4,7 +4,7 @@
 import sqlite3
 import os
 
-db = os.path.join(os.environ["APPDATA"], "Jot", "history.db")
+db = os.path.join(os.environ["APPDATA"], "Athena", "history.db")
 conn = sqlite3.connect(db)
 conn.row_factory = sqlite3.Row
 rows = conn.execute(

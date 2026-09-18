@@ -18,7 +18,7 @@ URL = "ws://127.0.0.1:8080/v1/realtime"
 
 
 def synth_wav() -> tuple[bytes, int]:
-    wav = Path(tempfile.gettempdir()) / f"jot-probe-{asyncio.get_event_loop().time()}.wav"
+    wav = Path(tempfile.gettempdir()) / f"athena-probe-{asyncio.get_event_loop().time()}.wav"
     ps = (
         "Add-Type -AssemblyName System.Speech;"
         "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"

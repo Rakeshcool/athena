@@ -1,6 +1,6 @@
-# Jot for Windows
+# Athena for Windows
 
-A Windows port of [Jot for macOS](MACOS_README.md) — hold a hotkey, speak, and polished
+A Windows port of [Athena for macOS](MACOS_README.md) — hold a hotkey, speak, and polished
 text lands at your cursor — running **fully locally**: no cloud, no API key,
 no accounts. Audio never leaves the machine.
 
@@ -17,8 +17,8 @@ hotkey down ─▶ WASAPI capture (WAV on disk from t=0) ─▶ key up ─▶ 16
 
 | Layer | Choice |
 |---|---|
-| App | C# / .NET 10, WPF tray app (`src/Jot.App`) |
-| Engine | `src/Jot.Core` — headless, zero UI deps, runs under plain `dotnet test` |
+| App | C# / .NET 10, WPF tray app (`src/Athena.App`) |
+| Engine | `src/Athena.Core` — headless, zero UI deps, runs under plain `dotnet test` |
 | ASR | Local Nemotron ASR server (`:8080`), OpenAI Whisper-compatible `/v1/audio/transcriptions` |
 | LLM | Local llama.cpp `llama-server` (`:3000`), OpenAI-compatible `/v1/chat/completions` |
 | Audio | NAudio WASAPI capture, native format → transcoded to 16 kHz mono after key-up |
@@ -27,10 +27,10 @@ hotkey down ─▶ WASAPI capture (WAV on disk from t=0) ─▶ key up ─▶ 16
 ## Run
 
 ```bash
-dotnet run --project src/Jot.App
+dotnet run --project src/Athena.App
 ```
 
-Hold **`` ` ``** to dictate (rebindable to any VK in `%APPDATA%\Jot\settings.json`).
+Hold **`` ` ``** to dictate (rebindable to any VK in `%APPDATA%\Athena\settings.json`).
 Release, and the cleaned text is pasted at your cursor. `Esc` cancels;
 **`` ` `` + Space** locks hands-free. Chord shortcuts (Ctrl+`` ` `` etc.) pass
 through to apps untouched.
@@ -41,7 +41,7 @@ both default to the localhost ports probed during the port.
 ## Layout
 
 ```
-src/Jot.Core/            ported engine (pure logic, unit-testable headlessly)
+src/Athena.Core/            ported engine (pure logic, unit-testable headlessly)
   DictationStateMachine.cs   idle→warming→recording→…→done, pure transitions
   HotkeyProcessor.cs         hold/tap/Space-lock grammar, pure + clock-free
   ValidationGate.cs          "never insert garbage" gate (answer-mode, drift…)
@@ -50,7 +50,7 @@ src/Jot.Core/            ported engine (pure logic, unit-testable headlessly)
   AudioLevelCurve.cs         the one 0…1 level definition + dB math
   HistoryStore.cs            SQLite + FTS5 history
   Clients/                   LocalAsrClient, LocalLlmClient (reasoning-aware)
-src/Jot.App/             Windows shell
+src/Athena.App/             Windows shell
   DictationCoordinator.cs    orchestrates the whole pipeline
   Interop/KeyboardHook.cs    WH_KEYBOARD_LL hook on a dedicated thread (EventTap analog)
   Interop/SendInputInserter.cs   Ctrl+V ladder with secure-input refusal
@@ -58,8 +58,8 @@ src/Jot.App/             Windows shell
   Audio/WarmRecorderPool.cs  prewarmed spare so key-down pays only StartRecording()
   Audio/WavRepair.cs         crash recovery: repair torn WAV headers
   Windows/MainWindow.xaml    history list + status (HUD pill arrives later)
-tests/Jot.Core.Tests/    91 tests (87 unit + 4 live smoke against your servers)
-tests/Jot.App.Tests/     5 warm-pool tests (skip on machines without a mic)
+tests/Athena.Core.Tests/    91 tests (87 unit + 4 live smoke against your servers)
+tests/Athena.App.Tests/     5 warm-pool tests (skip on machines without a mic)
 ```
 
 ## Tests
