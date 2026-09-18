@@ -47,10 +47,14 @@ public static class WavRepair
     private static long FindDataChunk(FileStream fs)
     {
         const uint dataFourcc = 0x61746164; // "data" little-endian
+        // Hoisted out of the loop (CA2014): each stackalloc would carve a fresh
+        // block that isn't reclaimed until return, and this loop walks raw chunk
+        // data from torn recovery files — an unbounded iteration count is the
+        // expected case, not the exception.
+        Span<byte> chunk = stackalloc byte[8];
         fs.Position = 12;
         while (fs.Position + 8 <= fs.Length)
         {
-            Span<byte> chunk = stackalloc byte[8];
             if (fs.Read(chunk) < 8) break;
             var id = BitConverter.ToUInt32(chunk);
             var size = BitConverter.ToUInt32(chunk[4..]);

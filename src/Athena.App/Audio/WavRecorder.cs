@@ -289,12 +289,19 @@ public sealed class WavRecorder : IDisposable
             Path.GetDirectoryName(rawPath)!, "audio.wav");
         try
         {
-            await using var source = new AudioFileReader(rawPath);
-            using var resampler = new MediaFoundationResampler(source, new WaveFormat(16000, 16, 1))
+            // Disposal MUST complete before the raw file is deleted: the reader
+            // holds capture.wav open until the end of its using scope, and a
+            // File.Delete under an open handle throws on Windows — the old
+            // block-scoped version silently failed EVERY transcode and
+            // returned the raw 48kHz capture instead.
+            await using (var source = new AudioFileReader(rawPath))
+            using (var resampler = new MediaFoundationResampler(source, new WaveFormat(16000, 16, 1))
             {
                 ResamplerQuality = 60,
-            };
-            WaveFileWriter.CreateWaveFile(finalPath, resampler);
+            })
+            {
+                WaveFileWriter.CreateWaveFile(finalPath, resampler);
+            }
             File.Delete(rawPath);
             return finalPath;
         }

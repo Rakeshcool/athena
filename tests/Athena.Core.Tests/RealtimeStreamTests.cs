@@ -29,12 +29,15 @@ public class RealtimeTranscriptTests
     }
 
     [Fact]
-    public void Finals_join_with_newlines_then_partial()
+    public void Finals_join_with_spaces_then_partial()
     {
         var t = new RealtimeTranscript();
         t.AbsorbCompleted("First segment.");
         t.AbsorbDelta("second seg");
-        Assert.Equal("First segment.\nsecond seg", t.Render);
+        // Segments are continuous speech split by server endpointing: a space
+        // joins them. A newline used to be inserted into the cleaned text and
+        // pasted as hard line breaks.
+        Assert.Equal("First segment. second seg", t.Render);
     }
 
     [Fact]
@@ -44,7 +47,7 @@ public class RealtimeTranscriptTests
         t.AbsorbCompleted("First.");
         t.AbsorbDelta("trailing words");
         t.SealPartial();
-        Assert.Equal("First.\ntrailing words", t.Render);
+        Assert.Equal("First. trailing words", t.Render);
         Assert.Equal(2, t.Finals.Count);
     }
 

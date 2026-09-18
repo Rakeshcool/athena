@@ -31,11 +31,14 @@ public sealed class RealtimeTranscript
     private readonly List<string> _finals = new();
     private string _partial = "";
 
-    /// <summary>All finals are final; the trailing partial is provisional.</summary>
+    /// <summary>All finals are final; the trailing partial is provisional.
+    /// Finals join with a SPACE: the segments are continuous speech split by
+    /// server endpointing, not paragraph breaks — a newline would ride all the
+    /// way into the cleaned text and be INSERTED as hard line breaks.</summary>
     public string Render =>
         _finals.Count == 0 ? _partial
-        : _partial.Length == 0 ? string.Join("\n", _finals)
-        : string.Join("\n", _finals) + "\n" + _partial;
+        : _partial.Length == 0 ? string.Join(" ", _finals)
+        : string.Join(" ", _finals) + " " + _partial;
 
     public bool HasText => Render.Trim().Length > 0;
     public IReadOnlyList<string> Finals => _finals;

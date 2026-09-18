@@ -30,7 +30,12 @@ public static class TranscriptArbiter
         return na.Length > 0 && na == nb;
     }
 
-    private static List<string> Tokenize(string text) => text.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+    /// <summary>Split on ANY whitespace (space, newline, tab) — realtime finals
+    /// were historically newline-joined, and a token carrying an embedded '\n'
+    /// would normalize to a different word than the file decode's clean token,
+    /// faking a disagreement and corrupting the graft.</summary>
+    private static List<string> Tokenize(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
 
     /// <summary>Pick between the streamed transcript and the file decode of the
     /// same recording. Returns the transcript to USE: the stream text with the
