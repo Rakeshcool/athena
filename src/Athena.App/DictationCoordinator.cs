@@ -386,7 +386,29 @@ public sealed class DictationCoordinator : IDisposable
         // stream's failure never costs the words, the file is always there.
         if (hasStreamedText)
         {
-            await FinishWithTranscriptAsync(flight, wavPath, duration, streamedRaw!);
+            var final = streamedRaw!;
+            if (_settings.CrossCheckAsr)
+            {
+                // Optional second opinion: the file decode sees the whole
+                // utterance at once, the stream decided its first word with
+                // zero left context. Only a disagreement at the FIRST word
+                // changes anything (TranscriptArbiter.Pick); a failed file
+                // decode just keeps the stream text — never costs words.
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
+                    var fromFile = await _transcriber.TranscribeAsync(wavPath, cts.Token);
+                    var arbitrated = TranscriptArbiter.Pick(final, fromFile);
+                    if (!string.Equals(arbitrated, final, StringComparison.Ordinal))
+                        _log("cross-check: file decode corrected the stream opening");
+                    final = arbitrated;
+                }
+                catch (Exception ex)
+                {
+                    _log($"cross-check skipped, keeping stream text: {ex.Message}");
+                }
+            }
+            await FinishWithTranscriptAsync(flight, wavPath, duration, final);
             return;
         }
 

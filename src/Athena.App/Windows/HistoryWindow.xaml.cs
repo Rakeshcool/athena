@@ -30,7 +30,7 @@ public sealed class HistoryRow
     public string DurationText => Duration is { } d ? $"{d:0.0}s" : "";
 }
 
-public partial class HistoryWindow : Window
+public partial class HistoryWindow : Wpf.Ui.Controls.FluentWindow
 {
     private readonly HistoryStore _history;
     private readonly Func<Guid, Task> _retryRequested;
@@ -89,7 +89,9 @@ public partial class HistoryWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Playback failed: {ex.Message}", "Athena");
+            // Fluent UI: no system MessageBox chrome — surface errors as an
+            // inline status line in the search box's placeholder position.
+            SearchBox.PlaceholderText = $"Playback failed: {ex.Message}";
         }
     }
 

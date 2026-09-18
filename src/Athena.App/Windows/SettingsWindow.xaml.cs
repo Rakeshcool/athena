@@ -13,7 +13,7 @@ using Athena.Core.Clients;
 
 namespace Athena.App.Windows;
 
-public partial class SettingsWindow : Window
+public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 {
     private readonly AthenaSettings _settings;
     private readonly DictionaryStore _dictionary;
@@ -26,23 +26,58 @@ public partial class SettingsWindow : Window
         _dictionary = dictionary;
         _settingsChanged = settingsChanged;
         Load();
+        // Push-to-talk key is fixed for now (settings.json HotkeyVk editable).
+        HotkeyDisplay.Text = "` (backtick)";
         // Save on every change AND on close: this is a tray app — a user picks
         // Hindi and dictates while the window is still open. Persisting only on
         // Closed made the picker read like it did nothing (the coordinator kept
         // the old language until the window shut).
         // SelectionChanged (fires during Load) and Closed both funnel through
         // Save(); it is idempotent.
+        // Implicit save, live: every control persists on change (the close-save
+        // remains as a backstop). Each save flashes the "saved" tick.
         LanguageBox.SelectionChanged += (_, _) => Save();
-        StreamingToggle.Checked += (_, _) => Save();
-        StreamingToggle.Unchecked += (_, _) => Save();
+        foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, CrossCheckToggle, LaunchAtLoginToggle, WarmAccentToggle })
+        {
+            toggle.Checked += (_, _) => Save();
+            toggle.Unchecked += (_, _) => Save();
+        }
+        PillTabs.SelectionChanged += (_, _) => ShowPage();
         Closed += (_, _) => Save();
     }
+
+    /// <summary>Pill-tab bar drives four content panels; the TabControl's own
+    /// content is never used.</summary>
+    private void ShowPage()
+    {
+        GeneralPage.Visibility = PillTabs.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ServersPage.Visibility = PillTabs.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        DictionaryPage.Visibility = PillTabs.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+        AboutPage.Visibility = PillTabs.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Implicit save stays, but it's no longer silent: a brief
+    /// "saved" tick in the title bar fades out (spec: confirmation on
+    /// implicit save).</summary>
+    private void ConfirmSaved()
+    {
+        SavedTick.Opacity = 1;
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0,
+            TimeSpan.FromMilliseconds(900))
+        { BeginTime = TimeSpan.FromMilliseconds(700) };
+        SavedTick.BeginAnimation(OpacityProperty, fade);
+    }
+
+    /// <summary>Explicit Save (mockup's bottom bar). Everything already
+    /// persists on change; this is the visible commitment + confirmation.</summary>
+    private void OnSaveClick(object sender, RoutedEventArgs e) => Save();
 
     private void Load()
     {
         CleanupToggle.IsChecked = _settings.CleanupEnabled;
         SoundsToggle.IsChecked = _settings.SoundsEnabled;
         StreamingToggle.IsChecked = _settings.StreamingEnabled;
+        CrossCheckToggle.IsChecked = _settings.CrossCheckAsr;
         AsrUrlBox.Text = _settings.AsrBaseUrl;
         LlmUrlBox.Text = _settings.LlmBaseUrl;
         LlmModelBox.Text = _settings.LlmModel ?? "";
@@ -53,6 +88,7 @@ public partial class SettingsWindow : Window
         var norm = Athena.Core.LanguageCatalog.Normalize(_settings.Language);
         LanguageBox.SelectedIndex = Math.Max(0, langs.FindIndex(l => l.Code == norm));
         LaunchAtLoginToggle.IsChecked = LaunchAtLogin.IsEnabled();
+        WarmAccentToggle.IsChecked = _settings.WarmAccent;
         RefreshDict();
     }
 
@@ -61,13 +97,17 @@ public partial class SettingsWindow : Window
         _settings.CleanupEnabled = CleanupToggle.IsChecked == true;
         _settings.SoundsEnabled = SoundsToggle.IsChecked == true;
         _settings.StreamingEnabled = StreamingToggle.IsChecked == true;
+        _settings.CrossCheckAsr = CrossCheckToggle.IsChecked == true;
         _settings.AsrBaseUrl = NormalizeUrl(AsrUrlBox.Text);
         _settings.LlmBaseUrl = NormalizeUrl(LlmUrlBox.Text);
         _settings.LlmModel = string.IsNullOrWhiteSpace(LlmModelBox.Text) ? null : LlmModelBox.Text.Trim();
         _settings.Language = (LanguageBox.SelectedItem as ComboBoxItem)?.Tag as string
             ?? Athena.Core.LanguageCatalog.Default;
+        _settings.WarmAccent = WarmAccentToggle.IsChecked == true;
         SettingsStore.Save(_settings);
+        ThemeManager.Apply(ThemeManager.FromSettings(_settings.WarmAccent));
         _settingsChanged();
+        ConfirmSaved();
     }
 
     private static string NormalizeUrl(string url)
@@ -184,10 +224,14 @@ public static class LaunchAtLogin
         if (enabled)
         {
             // CreateShellLink via COM would need a type lib; the pragmatic path:
-            // a .bat-free approach using the WScript.Shell COM object.
+            // a .bat-free approach using the WScript.Shell COM object. Both paths
+            // are single-quote-escaped: they embed the user profile path
+            // (%USERNAME%), and a quote in either would corrupt the command —
+            // PowerShell's '' inside '…' is the escape.
+            static string PsQuote(string s) => "'" + s.Replace("'", "''") + "'";
             var psi = new ProcessStartInfo("powershell")
             {
-                Arguments = $"-NoProfile -Command \"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{ShortcutPath}');$s.TargetPath='{exePath}';$s.Save()\"",
+                Arguments = $"-NoProfile -Command \"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({PsQuote(ShortcutPath)});$s.TargetPath={PsQuote(exePath)};$s.Save()\"",
                 CreateNoWindow = true,
                 UseShellExecute = false,
             };

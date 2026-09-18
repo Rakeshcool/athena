@@ -1,57 +1,148 @@
-<Window x:Class="Athena.App.Windows.MainWindow"
+<ui:FluentWindow x:Class="Athena.App.Windows.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Athena" Width="560" Height="480"
-        WindowStartupLocation="CenterScreen">
-    <Grid Margin="12">
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Athena" Width="560" Height="520"
+        WindowStartupLocation="CenterScreen"
+        ExtendsContentIntoTitleBar="True"
+        Background="{DynamicResource ApplicationBackgroundBrush}">
+    <ui:FluentWindow.Resources>
+        <!-- Cards: flat container template; the card Border is the visual.
+             Hover: slightly stronger fill, and the copy button fades in. -->
+        <Style x:Key="CardContainer" TargetType="ListBoxItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <ContentPresenter Margin="0,0,0,8"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="CardBorder" TargetType="Border">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="14,10"/>
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="RowCopyButton" TargetType="ui:Button">
+            <Setter Property="Opacity" Value="0"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </ui:FluentWindow.Resources>
+
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-            <TextBlock Text="Athena" FontSize="20" FontWeight="SemiBold"/>
-            <TextBlock x:Name="StatusText" Text="idle" Margin="12,4,0,0"
-                       Foreground="Gray" FontSize="13"/>
-        </StackPanel>
+        <!-- Custom title bar: name + live status; drag, Snap Layouts and
+             min/max/close are TitleBar's job (WM_NCHITTEST preserved). -->
+        <ui:TitleBar Grid.Row="0" Title="Athena" Padding="12,6,0,0" Height="40">
+            <ui:TitleBar.Header>
+                <StackPanel Orientation="Horizontal" Margin="4,0,0,0" VerticalAlignment="Center">
+                    <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#4C9E63"/>
+                    <TextBlock x:Name="StatusText" Text="ready" Margin="6,0,0,0"
+                               FontSize="12" Opacity="0.75" VerticalAlignment="Center"/>
+                </StackPanel>
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
 
-        <Border Grid.Row="1" Background="#FFF4F6FB" CornerRadius="6" Padding="10,6" Margin="0,0,0,8">
-            <TextBlock x:Name="HintText" TextWrapping="Wrap" FontSize="12"
-                       Text="Hold ` to talk. Release to insert. Hold + Space locks hands-free. Esc cancels."/>
-        </Border>
+        <Grid Grid.Row="1" Margin="16,0,16,16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-        <ListBox x:Name="HistoryList" Grid.Row="2" FontSize="13"
-                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <Border Padding="6,4" Background="Transparent">
-                        <StackPanel>
-                            <TextBlock Text="{Binding CleanedTranscript}" TextWrapping="Wrap"
-                                       FontWeight="Medium"/>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding StartedAt, StringFormat=HH:mm:ss}"
-                                           Foreground="Gray" FontSize="11"/>
-                                <TextBlock Text="{Binding Status}" Foreground="Gray"
-                                           FontSize="11" Margin="10,0,0,0"/>
-                                <TextBlock Text="{Binding TargetAppName}" Foreground="Gray"
-                                           FontSize="11" Margin="10,0,0,0"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
+            <!-- Live status pill: pulsing red dot while recording; the same
+                 TextBlock carries hints, log lines and streaming partials. -->
+            <Border Grid.Row="0" CornerRadius="16" Padding="14,7"
+                    HorizontalAlignment="Left" Margin="0,2,0,12"
+                    Background="{DynamicResource ControlFillColorSecondaryBrush}">
+                <StackPanel Orientation="Horizontal">
+                    <Grid Width="10" Height="10" VerticalAlignment="Center">
+                        <Ellipse x:Name="PillDot" Fill="#4C9E63"/>
+                        <Ellipse x:Name="PillPulse" Fill="#66E53935" Opacity="0"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform x:Name="PillPulseScale" ScaleX="1" ScaleY="1"/>
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                    </Grid>
+                    <TextBlock x:Name="HintText" Text="hold ` to dictate"
+                               Margin="8,0,0,0" FontSize="12" Opacity="0.85"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="440"/>
+                </StackPanel>
+            </Border>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
-            <Button x:Name="RetryButton" Content="Copy last" Click="OnCopyLast" Padding="10,4"/>
-            <Button x:Name="ClearButton" Content="Clear history" Click="OnClearHistory"
-                    Padding="10,4" Margin="8,0,0,0"/>
-            <Button x:Name="HistoryButton" Content="Full history…" Click="OnOpenHistory"
-                    Padding="10,4" Margin="8,0,0,0"/>
-            <Button x:Name="SettingsButton" Content="Settings…" Click="OnOpenSettings"
-                    Padding="10,4" Margin="8,0,0,0"/>
-        </StackPanel>
+            <!-- History as cards: transcript + muted metadata, hover-revealed copy. -->
+            <ListBox x:Name="HistoryList" Grid.Row="1"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     Background="Transparent" BorderThickness="0"
+                     VirtualizingPanel.ScrollUnit="Pixel"
+                     ItemContainerStyle="{StaticResource CardContainer}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource CardBorder}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{Binding CleanedTranscript}" TextWrapping="Wrap"
+                                               FontSize="14"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <TextBlock Text="{Binding StartedAt, StringFormat=HH:mm:ss}"
+                                                   FontSize="12" Opacity="0.55"/>
+                                        <TextBlock Text="{Binding Status}" FontSize="12"
+                                                   Opacity="0.55" Margin="10,0,0,0"/>
+                                        <TextBlock Text="{Binding TargetAppName}" FontSize="12"
+                                                   Opacity="0.55" Margin="10,0,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <!-- Always occupies its column: hover reveal with no
+                                     layout shift. -->
+                                <ui:Button Grid.Column="1" Style="{StaticResource RowCopyButton}"
+                                           Click="OnCopyRow" Margin="8,0,0,0"
+                                           Icon="{ui:SymbolIcon Copy20}"
+                                           ToolTip="Copy"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Bottom action bar: primary Copy last, ghost secondaries right. -->
+            <Grid Grid.Row="2" Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ui:Button Grid.Column="0" x:Name="RetryButton" Click="OnCopyLast"
+                           Appearance="Primary" Content="Copy last"
+                           HorizontalAlignment="Left" Padding="16,6"/>
+                <ui:Button Grid.Column="1" x:Name="ClearButton" Click="OnClearHistory"
+                           Content="Clear history" Padding="12,6" Margin="8,0,0,0"/>
+                <ui:Button Grid.Column="2" x:Name="HistoryButton" Click="OnOpenHistory"
+                           Content="History" Padding="12,6" Margin="8,0,0,0"/>
+                <ui:Button Grid.Column="3" x:Name="SettingsButton" Click="OnOpenSettings"
+                           Content="Settings" Padding="12,6" Margin="8,0,0,0"/>
+            </Grid>
+        </Grid>
     </Grid>
-</Window>
+</ui:FluentWindow>

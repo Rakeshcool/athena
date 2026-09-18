@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using Athena.App.Audio;
 using Athena.App.Interop;
+using Wpf.Ui.Appearance;
 
 namespace Athena.App;
 
@@ -15,6 +16,16 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         MigrateLegacyDataDirectory();
+
+        // Athena is a dark-brand app (per the settings mockup): force the dark
+        // palette regardless of the Windows theme so the accent scheme always
+        // holds. SystemThemeWatcher is deliberately NOT used — following the OS
+        // light theme would break the near-black design.
+        ApplicationThemeManager.Apply(ApplicationTheme.Dark, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
+
+        // Accent palette (neutral white vs warm salmon) from settings — merged
+        // BEFORE any window loads, so the first paint is already on-theme.
+        ThemeManager.Apply(ThemeManager.FromSettings(SettingsStore.Load().WarmAccent));
 
         // Tray app lifecycle: the main window is a VIEW, not the app's lifetime.
         // Closing it must leave Athena dictating from the tray — ShutdownMode

@@ -1,0 +1,14 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      Neutral accent — the default Athena palette: white highlight, near-black
+      labels on accent, dark knob on a light track. See Theme/Athena.xaml for
+      how the variant is consumed and ThemeManager for the swap.
+    -->
+    <Color x:Key="AthenaAccentColor">#FFF3F3F3</Color>
+    <Color x:Key="AthenaAccentHoverColor">#FFE0E0E0</Color>
+    <Color x:Key="AthenaAccentTextColor">#FF161616</Color>
+    <Color x:Key="AthenaSwitchKnobOnColor">#FF161616</Color>
+    <Color x:Key="AthenaSwitchStrokeOnColor">#FFF3F3F3</Color>
+</ResourceDictionary>

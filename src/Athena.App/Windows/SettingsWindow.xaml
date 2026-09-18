@@ -1,62 +1,231 @@
-<Window x:Class="Athena.App.Windows.SettingsWindow"
+<ui:FluentWindow x:Class="Athena.App.Windows.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Athena Settings" Width="640" Height="560"
-        WindowStartupLocation="CenterScreen">
-    <TabControl Margin="10">
-        <TabItem Header="General">
-            <StackPanel Margin="8">
-                <CheckBox x:Name="CleanupToggle" Content="Polish transcripts with the local LLM (self-corrections, punctuation, fillers)"
-                          Margin="0,4" IsChecked="True"/>
-                <CheckBox x:Name="SoundsToggle" Content="Play earcons on start/stop/success/error"
-                          Margin="0,4" IsChecked="True"/>
-                <Separator Margin="0,10"/>
-                <Separator Margin="0,10"/>
-                <TextBlock Text="Speech language" FontWeight="SemiBold"/>
-                <TextBlock Text="The language you dictate in. Used by the ASR model (streaming and file paths)."
-                           TextWrapping="Wrap" Foreground="Gray" Margin="0,2"/>
-                <ComboBox x:Name="LanguageBox" Margin="0,6,0,4" Width="280" HorizontalAlignment="Left"/>
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Athena Settings" Width="640" Height="580"
+        WindowStartupLocation="CenterScreen"
+        ExtendsContentIntoTitleBar="True"
+        Background="{DynamicResource ApplicationBackgroundBrush}">
+    <ui:FluentWindow.Resources>
+        <!-- Pill tabs: flat TabItems, active tab gets a muted fill. -->
+        <Style x:Key="PillTab" TargetType="TabItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Pill" CornerRadius="8" Padding="12,6" Margin="0,0,8,0"
+                                Background="Transparent">
+                            <ContentPresenter x:Name="TabHeader" ContentSource="Header" TextElement.FontSize="13"
+                                              TextElement.Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Pill" Property="Background"
+                                        Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                                <Setter TargetName="TabHeader" Property="TextElement.Foreground"
+                                        Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabHeader" Property="TextElement.Foreground"
+                                        Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Section label: weight 500, sentence case. -->
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Margin" Value="0,14,0,2"/>
+        </Style>
+        <Style x:Key="HelpText" TargetType="TextBlock">
+            <Setter Property="Opacity" Value="0.6"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,2"/>
+        </Style>
+        <!-- Dictionary table: the stock ListView/GridView chrome is system white
+             and ignores the dark theme — flat dark rows, hairline dividers,
+             quiet headers instead. -->
+        <Style x:Key="DictHeader" TargetType="GridViewColumnHeader">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="GridViewColumnHeader">
+                        <Border BorderBrush="{DynamicResource AthenaDividerBrush}"
+                                BorderThickness="0,0,0,1" Padding="0,0,12,6">
+                            <TextBlock Text="{TemplateBinding Content}" FontSize="12" FontWeight="Medium"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="DictRow" TargetType="ListViewItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+            <Setter Property="Padding" Value="0,7"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListViewItem">
+                        <Border x:Name="Row" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                BorderBrush="{DynamicResource AthenaDividerBrush}" BorderThickness="0,0,0,1">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Row" Property="Background"
+                                        Value="{DynamicResource ControlFillColorDefaultBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Row" Property="Background"
+                                        Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </ui:FluentWindow.Resources>
 
-                <CheckBox x:Name="StreamingToggle" Content="Stream speech to text live while dictating"
-                          Margin="0,10,0,2"/>
-                <TextBlock Text="Shows partial words in the pill as you speak and finishes near-instantly at key-up. Unchecked transcribes the finished recording instead — slightly slower, but the whole utterance is transcribed with full context. Streaming failures always fall back to the recording either way."
-                           TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,2"/>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
-                <Separator Margin="0,10"/>
-                <TextBlock Text="Push-to-talk key" FontWeight="SemiBold"/>
-                <TextBlock Text="Hold ` (backtick) to talk. Hold + Space locks hands-free. Ctrl/Alt/Win+` passes through to apps."
-                           TextWrapping="Wrap" Foreground="Gray" Margin="0,2"/>
-                <Separator Margin="0,10"/>
-                <TextBlock Text="Launch" FontWeight="SemiBold"/>
-                <CheckBox x:Name="LaunchAtLoginToggle" Content="Start Athena when Windows starts"
-                          Margin="0,4"/>
+        <ui:TitleBar Grid.Row="0" Title="Athena settings" Padding="12,6,0,0" Height="40">
+            <ui:TitleBar.Header>
+                <TextBlock x:Name="SavedTick" Text="saved" FontSize="12" Opacity="0"
+                           Margin="10,0,0,0" VerticalAlignment="Center"/>
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
+
+        <Grid Grid.Row="1" Margin="16,4,16,16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TabControl x:Name="PillTabs" Grid.Row="0" Background="Transparent"
+                        BorderThickness="0" Margin="0,0,0,4">
+                <TabItem Style="{StaticResource PillTab}" Header="General"/>
+                <TabItem Style="{StaticResource PillTab}" Header="Servers"/>
+                <TabItem Style="{StaticResource PillTab}" Header="Dictionary"/>
+                <TabItem Style="{StaticResource PillTab}" Header="About"/>
+            </TabControl>
+
+            <ContentControl Grid.Row="1" Content="{Binding SelectedContent, ElementName=PillTabs}"/>
+
+            <!-- General: mockup row layout — title + muted sublabel left,
+                 toggle right, hairline dividers between rows. -->
+            <StackPanel Grid.Row="1" x:Name="GeneralPage" Visibility="Collapsed" Margin="0,4,0,0">
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Polish transcripts with local LLM" FontSize="13"/>
+                        <TextBlock Text="Self-corrections, punctuation, fillers" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="CleanupToggle" VerticalAlignment="Center"/>
+                </Grid>
+                <Border Style="{StaticResource RowDivider}"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Play earcons" FontSize="13"/>
+                        <TextBlock Text="Start / stop / success / error" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="SoundsToggle" VerticalAlignment="Center"/>
+                </Grid>
+                <Border Style="{StaticResource RowDivider}"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Stream speech to text live" FontSize="13"/>
+                        <TextBlock Text="Partial words while dictating; failures fall back to the recording" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="StreamingToggle" VerticalAlignment="Center"/>
+                </Grid>
+                <Border Style="{StaticResource RowDivider}"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Cross-check the stream against the recording" FontSize="13"/>
+                        <TextBlock Text="First-word accuracy — fixes “Write” heard as “Right”; one extra local transcription" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="CrossCheckToggle" VerticalAlignment="Center"/>
+                </Grid>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Speech language"/>
+                <ComboBox x:Name="LanguageBox" Margin="0,6,0,0"/>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Push-to-talk key"/>
+                <ui:TextBox x:Name="HotkeyDisplay" Text="` (backtick)" IsReadOnly="True" Margin="0,6,0,0"/>
+                <TextBlock Style="{StaticResource HelpText}"
+                           Text="Hold to talk. Hold + Space locks hands-free. Ctrl/Alt/Win+` passes through to apps."/>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Launch"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Start Athena when Windows starts" FontSize="13"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="LaunchAtLoginToggle" VerticalAlignment="Center"/>
+                </Grid>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Appearance"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Warm accent color" FontSize="13"/>
+                        <TextBlock Text="Salmon highlights and toggles instead of white" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="WarmAccentToggle" VerticalAlignment="Center"/>
+                </Grid>
             </StackPanel>
-        </TabItem>
 
-        <TabItem Header="Servers">
-            <StackPanel Margin="8">
-                <TextBlock Text="Local Nemotron ASR server URL"/>
-                <TextBox x:Name="AsrUrlBox" Margin="0,4,0,12" Text="http://127.0.0.1:8080"/>
-                <TextBlock Text="Local llama.cpp LLM server URL"/>
-                <TextBox x:Name="LlmUrlBox" Margin="0,4,0,12" Text="http://127.0.0.1:3000"/>
-                <TextBlock Text="LLM model (optional; blank = server default)"/>
-                <TextBox x:Name="LlmModelBox" Margin="0,4,0,12"/>
-                <Button x:Name="TestServersButton" Content="Test connection" Width="140"
-                        HorizontalAlignment="Left" Click="OnTestServers"/>
-                <TextBlock x:Name="ServerStatus" Foreground="Gray" Margin="0,8,0,0" TextWrapping="Wrap"/>
+            <!-- Servers -->
+            <StackPanel Grid.Row="1" x:Name="ServersPage" Visibility="Collapsed" Margin="0,4,0,0">
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Local Nemotron ASR server URL"/>
+                <ui:TextBox x:Name="AsrUrlBox" Margin="0,6,0,12" MaxWidth="420" HorizontalAlignment="Left"/>
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Local llama.cpp LLM server URL"/>
+                <ui:TextBox x:Name="LlmUrlBox" Margin="0,6,0,12" MaxWidth="420" HorizontalAlignment="Left"/>
+                <TextBlock Style="{StaticResource SectionLabel}" Text="LLM model (optional; blank = server default)"/>
+                <ui:TextBox x:Name="LlmModelBox" Margin="0,6,0,12" MaxWidth="420" HorizontalAlignment="Left"/>
+                <ui:Button x:Name="TestServersButton" Content="Test connection" Click="OnTestServers"
+                           Width="140" HorizontalAlignment="Left" Appearance="Primary"/>
+                <TextBlock x:Name="ServerStatus" Opacity="0.7" Margin="0,10,0,0" TextWrapping="Wrap"/>
             </StackPanel>
-        </TabItem>
 
-        <TabItem Header="Dictionary">
-            <Grid Margin="8">
+            <!-- Dictionary -->
+            <Grid Grid.Row="1" x:Name="DictionaryPage" Visibility="Collapsed" Margin="0,4,0,0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
-
-                <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="Gray"
+                <TextBlock Grid.Row="0" Style="{StaticResource HelpText}"
                            Text="Terms spell jargon correctly in the transcript. Replacements enforce wrong → right after the model — the dictionary's guarantee."/>
                 <Grid Grid.Row="1" Margin="0,8">
                     <Grid.ColumnDefinitions>
@@ -65,35 +234,42 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBox x:Name="NewTermBox" Grid.Column="0" Margin="0,0,4,0"/>
-                    <TextBox x:Name="NewRightBox" Grid.Column="1" Margin="0,0,4,0"/>
-                    <Button x:Name="AddTermButton" Grid.Column="2" Content="Add term" Click="OnAddTerm" Padding="8,3"/>
-                    <Button x:Name="AddRuleButton" Grid.Column="3" Content="Add replacement" Click="OnAddRule" Padding="8,3"/>
+                    <ui:TextBox x:Name="NewTermBox" Grid.Column="0" Margin="0,0,4,0" PlaceholderText="Term or wrong word"/>
+                    <ui:TextBox x:Name="NewRightBox" Grid.Column="1" Margin="0,0,4,0" PlaceholderText="Correct spelling"/>
+                    <ui:Button x:Name="AddTermButton" Grid.Column="2" Content="Add term" Click="OnAddTerm" Padding="10,4"/>
+                    <ui:Button x:Name="AddRuleButton" Grid.Column="3" Content="Add replacement" Click="OnAddRule" Padding="10,4" Margin="6,0,0,0"/>
                 </Grid>
-                <ListView x:Name="DictList" Grid.Row="2" FontSize="12">
+                <ListView x:Name="DictList" Grid.Row="2" FontSize="12"
+                          Background="Transparent" BorderThickness="0"
+                          ItemContainerStyle="{StaticResource DictRow}">
                     <ListView.View>
-                        <GridView>
+                        <GridView ColumnHeaderContainerStyle="{StaticResource DictHeader}">
                             <GridViewColumn Header="Term / wrong" Width="220" DisplayMemberBinding="{Binding Left}"/>
                             <GridViewColumn Header="Replacement" Width="220" DisplayMemberBinding="{Binding Right}"/>
                         </GridView>
                     </ListView.View>
                 </ListView>
-                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8">
-                    <Button Content="Remove selected" Click="OnRemoveSelected" Padding="8,3"/>
-                    <Button Content="Import CSV…" Click="OnImportCsv" Padding="8,3" Margin="8,0,0,0"/>
-                    <Button Content="Export CSV…" Click="OnExportCsv" Padding="8,3" Margin="8,0,0,0"/>
+                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+                    <ui:Button Content="Remove selected" Click="OnRemoveSelected" Padding="10,4"/>
+                    <ui:Button Content="Import CSV…" Click="OnImportCsv" Padding="10,4" Margin="8,0,0,0"/>
+                    <ui:Button Content="Export CSV…" Click="OnExportCsv" Padding="10,4" Margin="8,0,0,0"/>
                 </StackPanel>
             </Grid>
-        </TabItem>
 
-        <TabItem Header="About">
-            <StackPanel Margin="8">
-                <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock TextWrapping="Wrap" Margin="0,8" Foreground="Gray"
+            <!-- About -->
+            <StackPanel Grid.Row="1" x:Name="AboutPage" Visibility="Collapsed" Margin="0,4,0,0">
+                <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="Medium"/>
+                <TextBlock TextWrapping="Wrap" Margin="0,8" Opacity="0.7"
                            Text="Hold a key, speak, and polished text lands at your cursor — fully local. Nemotron ASR + llama.cpp cleanup, no cloud, no accounts."/>
-                <TextBlock TextWrapping="Wrap" Foreground="Gray"
+                <TextBlock TextWrapping="Wrap" Opacity="0.7"
                            Text="Audio is on disk before any transcription starts, every failure is retryable from History, and transcripts never leave this machine."/>
             </StackPanel>
-        </TabItem>
-    </TabControl>
-</Window>
+
+            <!-- Bottom bar: explicit Save (mockup), persistent across tabs. -->
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                <ui:Button x:Name="SaveButton" Content="Save" Click="OnSaveClick"
+                           Style="{StaticResource PrimaryNeutralButton}" MinWidth="84"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

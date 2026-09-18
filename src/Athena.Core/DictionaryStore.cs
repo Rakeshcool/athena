@@ -156,7 +156,10 @@ public sealed class DictionaryStore
         Save();
     }
 
-    /// <summary>CSV with header `wrong,right` or `term` rows (Athena's quick-add format).</summary>
+    /// <summary>CSV with header `wrong,right` or `term` rows (Athena's quick-add
+    /// format). Fields may be quoted with `"` (doubled `""` = literal quote).
+    /// Formula-leading cells are guarded on export and unguarded on import, so
+    /// export→import round-trips exactly — see CsvCell.</summary>
     public void ImportCsv(string csv)
     {
         var data = new DictionaryData();
@@ -164,11 +167,11 @@ public sealed class DictionaryStore
         {
             var line = rawLine.Trim().TrimEnd('\r');
             if (line.Length == 0 || line.StartsWith('#')) continue;
-            var parts = line.Split(',');
-            if (parts.Length >= 2)
-                data.Replacements.Add(new ReplacementEntry { Wrong = parts[0], Right = parts[1] });
-            else
-                data.Terms.Add(new DictionaryEntry { Term = parts[0] });
+            var fields = ParseCsvLine(line);
+            if (fields.Count >= 2)
+                data.Replacements.Add(new ReplacementEntry { Wrong = Unguard(fields[0]), Right = Unguard(fields[1]) });
+            else if (fields.Count == 1)
+                data.Terms.Add(new DictionaryEntry { Term = Unguard(fields[0]) });
         }
         // Import MERGES (ReplaceAll would let a bad CSV wipe the user's jargon).
         var current = Snapshot();
@@ -181,8 +184,58 @@ public sealed class DictionaryStore
     {
         var snap = Snapshot();
         var lines = new List<string> { "# term or wrong,right" };
-        lines.AddRange(snap.Terms.Select(t => t.Term));
-        lines.AddRange(snap.Replacements.Select(r => $"{r.Wrong},{r.Right}"));
+        lines.AddRange(snap.Terms.Select(t => CsvCell(t.Term)));
+        lines.AddRange(snap.Replacements.Select(r => $"{CsvCell(r.Wrong)},{CsvCell(r.Right)}"));
         return string.Join("\n", lines);
+    }
+
+    /// <summary>Two defenses for cells leaving the app:
+    /// 1. Spreadsheet formula injection — a cell beginning with = + - @ or tab
+    ///    executes as a formula when the CSV is opened in Excel/Sheets
+    ///    (DDE, hyperlinks, etc.). Guarded with the classic leading apostrophe.
+    /// 2. Embedded commas/quotes — quoted with doubled-quote escaping so the
+    ///    record survives ImportCsv and other CSV readers intact.
+    /// ImportCsv removes the guard only when the apostrophe directly precedes a
+    /// formula char, so an exported file re-imports to identical data.</summary>
+    private static string CsvCell(string value)
+    {
+        if (value.Length > 0 && value[0] is '=' or '+' or '-' or '@' or '\t')
+            value = "'" + value;
+        if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
+            value = "\"" + value.Replace("\"", "\"\"") + "\"";
+        return value;
+    }
+
+    private static string Unguard(string field) =>
+        field.Length > 1 && field[0] == '\'' && (field[1] is '=' or '+' or '-' or '@' or '\t')
+            ? field[1..]
+            : field;
+
+    /// <summary>One CSV record line → fields, honoring `"` quoting with `""`
+    /// escapes. Our writer never emits embedded newlines (ReplaceAll strips
+    /// them at the door), so lines are whole records.</summary>
+    private static List<string> ParseCsvLine(string line)
+    {
+        var fields = new List<string>();
+        var cell = new System.Text.StringBuilder();
+        bool inQuotes = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (inQuotes)
+            {
+                if (c == '"')
+                {
+                    if (i + 1 < line.Length && line[i + 1] == '"') { cell.Append('"'); i++; }
+                    else inQuotes = false;
+                }
+                else cell.Append(c);
+            }
+            else if (c == '"' && cell.Length == 0) inQuotes = true;
+            else if (c == ',') { fields.Add(cell.ToString()); cell.Clear(); }
+            else cell.Append(c);
+        }
+        fields.Add(cell.ToString());
+        return fields;
     }
 }

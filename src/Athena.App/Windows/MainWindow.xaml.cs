@@ -18,7 +18,7 @@ using Athena.Core.Clients;
 
 namespace Athena.App.Windows;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
     private static MainWindow? _instance;
 
@@ -40,8 +40,69 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // No SystemThemeWatcher: Athena is dark-brand by design.
         Loaded += OnLoaded;
         _instance = this;
+    }
+
+    private const string DefaultHint = "hold ` to dictate";
+    private static readonly System.Windows.Media.Brush ReadyBrush =
+        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0x9E, 0x63));
+    private static readonly System.Windows.Media.Brush RecordingBrush =
+        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE5, 0x39, 0x35));
+    private static readonly System.Windows.Media.Brush WorkingBrush =
+        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x8A, 0x8A, 0x8A));
+    private System.Windows.Media.Animation.Storyboard? _pulseStoryboard;
+
+    /// <summary>The pill dot: semantic red pulse while recording (the only
+    /// accent color in the UI), muted gray while working, green when ready.</summary>
+    private void SetPillDot(bool recording = false, bool working = false)
+    {
+        if (recording)
+        {
+            PillDot.Fill = RecordingBrush;
+            StartPulse();
+        }
+        else
+        {
+            StopPulse();
+            PillDot.Fill = working ? WorkingBrush : ReadyBrush;
+        }
+    }
+
+    private void StartPulse()
+    {
+        if (_pulseStoryboard is not null) return;
+        var scale = new System.Windows.Media.Animation.DoubleAnimation(
+            1, 1.9, new Duration(TimeSpan.FromMilliseconds(900)))
+        { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever };
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(
+            0.65, 0, new Duration(TimeSpan.FromMilliseconds(900)))
+        { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever };
+        var sb = new System.Windows.Media.Animation.Storyboard();
+        System.Windows.Media.Animation.Storyboard.SetTarget(scale, PillPulse);
+        System.Windows.Media.Animation.Storyboard.SetTarget(fade, PillPulse);
+        System.Windows.Media.Animation.Storyboard.SetTargetProperty(scale,
+            new System.Windows.PropertyPath("(UIElement.RenderTransform).(ScaleTransform.ScaleX)"));
+        System.Windows.Media.Animation.Storyboard.SetTargetProperty(fade,
+            new System.Windows.PropertyPath("Opacity"));
+        var scaleY = scale.Clone();
+        System.Windows.Media.Animation.Storyboard.SetTarget(scaleY, PillPulse);
+        System.Windows.Media.Animation.Storyboard.SetTargetProperty(scaleY,
+            new System.Windows.PropertyPath("(UIElement.RenderTransform).(ScaleTransform.ScaleY)"));
+        sb.Children.Add(scale);
+        sb.Children.Add(scaleY);
+        sb.Children.Add(fade);
+        _pulseStoryboard = sb;
+        sb.Begin(PillPulse, true);
+    }
+
+    private void StopPulse()
+    {
+        _pulseStoryboard?.Stop(PillPulse);
+        _pulseStoryboard = null;
+        PillPulse.Opacity = 0;
+        PillPulseScale.ScaleX = PillPulseScale.ScaleY = 1;
     }
 
     /// <summary>Tray re-open: reuse the existing window. Never exits the app.</summary>
@@ -123,7 +184,14 @@ public partial class MainWindow : Window
 
         _coordinator.StateChanged += s => Dispatcher.BeginInvoke(() => OnStateChanged(s));
         _coordinator.Level += l => _hud?.OnLevel(l);
-        _coordinator.LivePartial += text => Dispatcher.BeginInvoke(() => _hud?.SetLiveText(text));
+        _coordinator.LivePartial += text => Dispatcher.BeginInvoke(() =>
+        {
+            _hud?.SetLiveText(text);
+            // Partials also land in the main window's status pill — the spec's
+            // "partial transcript inside the pill" — while the HUD pill serves
+            // the you're-in-another-app case.
+            HintText.Text = text;
+        });
         _coordinator.CorrectionReady += (raw, cleaned) => Dispatcher.BeginInvoke(() =>
         {
             // The reveal: show the edit, not just the result — cuts strike
@@ -212,7 +280,23 @@ public partial class MainWindow : Window
 
     private void OnStateChanged(DictationState s)
     {
-        StatusText.Text = s.ToString();
+        // Title-bar status + pill dot: sentence case, three moods.
+        switch (s)
+        {
+            case DictationState.Warming or DictationState.Recording:
+                StatusText.Text = "listening";
+                SetPillDot(recording: true);
+                break;
+            case DictationState.Finalizing or DictationState.Transcribing or DictationState.Inserting:
+                StatusText.Text = "working";
+                SetPillDot(working: true);
+                break;
+            default:
+                StatusText.Text = "ready";
+                HintText.Text = DefaultHint;
+                SetPillDot(recording: false);
+                break;
+        }
         if (_tray is not null) _tray.Text = s == DictationState.Idle ? "Athena" : $"Athena — {s}";
         if (_hook is not null)
             _hook.SessionActive = s is not (DictationState.Idle or DictationState.Done
@@ -299,6 +383,14 @@ public partial class MainWindow : Window
     }
 
     private void AppendLog(string message) => HintText.Text = message;
+
+    /// <summary>Hover-revealed copy button on a history card.</summary>
+    private void OnCopyRow(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: Athena.Core.DictationRecord rec } &&
+            !string.IsNullOrEmpty(rec.CleanedTranscript))
+            System.Windows.Clipboard.SetText(rec.CleanedTranscript);
+    }
 
     private void OnCopyLast(object sender, RoutedEventArgs e)
     {

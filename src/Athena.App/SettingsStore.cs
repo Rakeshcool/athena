@@ -23,6 +23,14 @@ public sealed class AthenaSettings
     /// (and the retry path), so disabling this is purely a privacy/latency trade.</summary>
     public bool StreamingEnabled { get; set; } = true;
 
+    /// <summary>After a streamed dictation, also transcribe the on-disk recording
+    /// and prefer it when the two disagree on the FIRST word. The stream decides
+    /// each word with zero left context at utterance start — the classic
+    /// "Write" heard as "Right" — while the file decode sees the whole utterance
+    /// at once. Costs one local file transcription per dictation; the stream text
+    /// always stands if the recording can't be transcribed.</summary>
+    public bool CrossCheckAsr { get; set; } = true;
+
     public const uint MOD_CONTROL = 0x0002;
     public const uint MOD_WIN = 0x0008;
 
@@ -42,6 +50,11 @@ public sealed class AthenaSettings
     public int RetentionDays { get; set; } = 7;
 
     public bool LaunchAtLogin { get; set; }
+
+    /// <summary>Appearance → warm salmon accent (the mockup palette) instead of
+    /// the default neutral white highlight. Applies live; persisted like every
+    /// other setting.</summary>
+    public bool WarmAccent { get; set; }
 
     [JsonIgnore]
     public string HotkeyDisplay => "`";

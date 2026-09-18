@@ -11,6 +11,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+    <!-- Direct override: Microsoft.Data.Sqlite 9.0.0 transitively pins
+         SQLitePCLRaw.lib.e_sqlite3 2.1.10, whose bundled native SQLite predates
+         3.50.2 (CVE-2025-6965, memory corruption). Pinning the lib to the
+         patched build closes it; a direct reference wins over the transitive
+         pin. Re-check with: dotnet list package, include transitive. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>
 
 </Project>
