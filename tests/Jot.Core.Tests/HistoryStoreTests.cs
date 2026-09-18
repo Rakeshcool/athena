@@ -1,0 +1,84 @@
+using Jot.Core;
+using Xunit;
+
+namespace Jot.Core.Tests;
+
+public class HistoryStoreTests : IDisposable
+{
+    private readonly HistoryStore _store;
+    private readonly string _path;
+
+    public HistoryStoreTests()
+    {
+        _path = Path.Combine(Path.GetTempPath(), $"jot-test-{Guid.NewGuid():N}.db");
+        _store = new HistoryStore(_path);
+    }
+
+    [Fact]
+    public void Upsert_and_get_roundtrip()
+    {
+        var id = Guid.NewGuid();
+        _store.Upsert(new DictationRecord
+        {
+            Id = id, StartedAt = DateTime.Now, Status = SessionStatus.Recording,
+        });
+        _store.Upsert(new DictationRecord
+        {
+            Id = id, StartedAt = DateTime.Now, Status = SessionStatus.Inserted,
+            RawTranscript = "um hello world", CleanedTranscript = "Hello, world!",
+            AudioDurationSeconds = 1.5,
+        });
+
+        var got = _store.Get(id);
+        Assert.NotNull(got);
+        Assert.Equal(SessionStatus.Inserted, got!.Status);
+        Assert.Equal("Hello, world!", got.CleanedTranscript);
+        Assert.Equal(1.5, got.AudioDurationSeconds);
+    }
+
+    [Fact]
+    public void Recent_orders_newest_first()
+    {
+        _store.Upsert(new DictationRecord
+        {
+            Id = Guid.NewGuid(), StartedAt = DateTime.Now.AddMinutes(-5),
+            RawTranscript = "older",
+        });
+        _store.Upsert(new DictationRecord
+        {
+            Id = Guid.NewGuid(), StartedAt = DateTime.Now,
+            RawTranscript = "newer",
+        });
+        Assert.Equal("newer", _store.Recent(10)[0].RawTranscript);
+    }
+
+    [Fact]
+    public void Fts_search_finds_transcripts()
+    {
+        _store.Upsert(new DictationRecord
+        {
+            Id = Guid.NewGuid(), StartedAt = DateTime.Now,
+            RawTranscript = "the kubernetes deployment rolled out successfully",
+            CleanedTranscript = "The Kubernetes deployment rolled out successfully.",
+        });
+        var hits = _store.Search("kubernetes");
+        Assert.Single(hits);
+    }
+
+    [Fact]
+    public void Delete_all_clears_everything()
+    {
+        _store.Upsert(new DictationRecord
+        {
+            Id = Guid.NewGuid(), StartedAt = DateTime.Now, RawTranscript = "x",
+        });
+        _store.DeleteAll();
+        Assert.Empty(_store.Recent(10));
+    }
+
+    public void Dispose()
+    {
+        _store.Dispose();
+        try { File.Delete(_path); } catch { }
+    }
+}

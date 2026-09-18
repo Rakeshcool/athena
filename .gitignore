@@ -17,3 +17,9 @@ Jot.xcodeproj/
 Package.resolved
 build/
 xcuserdata/
+
+# .NET (Windows port)
+bin/
+obj/
+*.user
+.vs/

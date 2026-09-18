@@ -1,179 +1,231 @@
 <div align="center">
 
-<img src="docs/images/icon.png" width="128" alt="Jot">
+# Jot for Windows
 
-# Jot
+**Hold a key. Speak. It types — and it never leaves your machine.**
 
-**[Gemini 3.5 Transcribe](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-transcribe) Demo. Hold a key. Speak. It types.**
+Local dictation for Windows: [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+for speech-to-text and a llama.cpp-served LLM for cleanup. No cloud, no API key,
+no account. Your voice never touches the network.
 
-Smart dictation for macOS that puts polished text wherever your cursor is.
-
-<sub>Created by [Ammaar Reshi](https://x.com/ammaar) · Apache 2.0 licensed</sub>
+<sub>A Windows port of <a href="docs/MACOS_README.md">Jot for macOS</a> (Gemini edition) · Apache 2.0</sub>
 
 </div>
-
-This is not an officially supported Google product.
 
 ---
 
 ## What it is
 
-Hold `fn`, say the thing, let go. A moment later your words are in the app you
-were already using — punctuated, filler words removed, cleaned up. No window to switch
-to, no transcript to copy, no account to make.
+Hold `` ` ``, say the thing, let go. A moment later your words are in the app you
+were already using — punctuated, filler words removed, self-corrections applied.
+While you speak, your words appear **live** in a small pill at the bottom of the
+screen, streamed from the ASR model in real time.
 
-<img width="640" height="294" alt="Jot preview" src="https://github.com/user-attachments/assets/669efea9-dbfe-4174-a8fe-748aab818f14" />
+```
+hold ` ─▶ mic capture (WAV on disk from the first millisecond)
+        └─▶ live PCM16 stream ─▶ Nemotron ASR ─▶ partials in the HUD, live
+key up ─▶ commit ─▶ final transcript ─▶ LLM cleanup ─▶ validation gate
+        ─▶ your words pasted at the cursor
+```
 
+It follows a change of mind: say *"let's meet at 1pm — actually, no, make it
+2pm"* and Jot writes **"Let's meet at 2pm."** That is the whole pitch, and you
+can watch it happen live in the HUD while you're still talking.
 
-It is deliberately small: a menu bar icon, a pill at the bottom of your screen
-while you talk, and a History window that proves nothing was ever lost.
+## Requirements
 
-## The three gestures
+| | |
+|---|---|
+| **OS** | Windows 10 (19041+) or Windows 11 |
+| **.NET** | .NET SDK 10.0 (build) — the app itself targets `net10.0-windows` |
+| **ASR server** | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) serving `nemotron-3.5-asr-streaming-0.6b` on `http://127.0.0.1:8080` |
+| **LLM server** | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` on `http://127.0.0.1:3000` (any OpenAI-compatible chat server works; reasoning models supported) |
+| **Mic** | Any input device — capture runs in the device's native format |
+
+Both servers are expected to already be running (the port was built against a
+local setup; it never downloads models). Everything is localhost-only.
+
+## Build & run
+
+```powershell
+# from the repo root
+dotnet build JotWin.sln -c Debug
+
+# launch (tray app — a pill appears when you dictate)
+src\Jot.App\bin\Debug\net10.0-windows10.0.19041.0\Jot.exe
+```
+
+Or in one step during development:
+
+```powershell
+dotnet run --project src/Jot.App
+```
+
+Run the tests (109 unit tests + 5 live integration tests; live tests
+auto-skip when the local servers are down):
+
+```powershell
+dotnet test JotWin.sln
+```
+
+## The gestures
 
 | Gesture | What happens |
 | --- | --- |
-| **Hold `fn`** | Records while held. Release and the text lands at your cursor. |
-| **`fn` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `fn` to finish. |
-| **`Esc`** | Cancels. Anything over 10 seconds is still kept in History. |
+| **Hold `` ` ``** | Records while held — live text streams into the HUD. Release and the text lands at your cursor. |
+| **`` ` `` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `` ` `` to finish. |
+| **`Esc`** | Cancels; buffered audio is discarded server-side. |
+| **Ctrl/Alt/Win + `` ` ``** | Passes through to apps untouched — only the bare key belongs to Jot. |
 
-The key is rebindable in Settings → General if `fn` is spoken for.
+The key is rebindable to any virtual key code in
+`%APPDATA%\Jot\settings.json` (`HotkeyVk`, e.g. `0xC0` = backtick).
 
-## What makes it different
+## The pipeline
 
-**It follows a change of mind.** Say *"let's meet at 1pm — actually, no, make it
-2pm"* and Jot writes **"Let's meet at 2pm."** That is the whole pitch, and
-onboarding makes you do it once so you believe it.
+Each stage exists so the next one can be trusted — and every stage can fail
+without losing words:
 
-**It never loses your words.** Audio goes to disk from the first millisecond, so
-a crash, a `kill -9`, or a flat battery costs you nothing — the recording is
-recovered on next launch. Offline, dictations queue and land when you reconnect.
-Every failure is retryable from History. Release the key mid-word and it keeps
-listening until you actually stop.
+1. **Crash-safe capture** — WAV hits disk from t=0, fsynced. A crash, `taskkill /f`,
+   or a dead battery costs nothing: on next launch, unfinished sessions are
+   marked `Recovered` and their audio is intact (torn headers are repaired).
+   The capture graph is also **prebuilt while idle** (a warm pool, like the
+   macOS original), so key-down pays only `StartRecording()` — the 100-odd ms
+   of device activation is exactly where first words used to be lost.
+2. **Live streaming ASR** — PCM16 mono 16 kHz streams over the server's
+   realtime WebSocket (`/v1/audio/transcriptions/realtime`). Partial words
+   render in the HUD as you speak. On key-up the server commits and the
+   **streamed transcript is used directly** — no second transcription pass.
+3. **The always-on fallback** — if the stream dies mid-word, the file endpoint
+   (`POST /v1/audio/transcriptions`) transcribes the on-disk WAV instead. The
+   stream is an optimization; the file is the record.
+4. **LLM cleanup** — the raw transcript (already punctuated by the ASR model)
+   goes to the local LLM with a steering prompt: filler removal, self-correction
+   collapsing, per-app tone (Email / Work chat / Personal chat / Code / Neutral).
+5. **Validation gate** — a <1ms semantic check of the LLM's output (did it answer
+   the dictation instead of cleaning it? paraphrase-drift? hallucinated
+   expansion? dropped content?). On rejection, the **raw** transcript is
+   inserted — a high-quality fallback, never garbage.
+6. **Replacement engine** — dictionary wrong→right rules applied as
+   deterministic string operations. The LLM cannot override them.
+7. **Insertion** — synthesized `Ctrl+V` (SendInput) at the cursor. Elevated
+   windows are detected (UIPI) and refused: the text is copied to the clipboard
+   with a tray balloon instead of blind-pasting into nowhere.
 
-**It is private by architecture.** Your voice goes from your Mac straight to the
-Gemini API with *your* key. No middleman server, no account, no analytics, no
-screenshots, no keystroke logging — one network host, and you can read every
-line of the code that talks to it. See [PRIVACY.md](docs/PRIVACY.md).
+## Privacy
 
-**Your jargon, spelled right.** Names and product terms go in the Dictionary and
-ride along with the audio, so the model hears "Kubernetes" instead of guessing
-"cooper netties" — corrected at the source, not patched afterwards. Tone matching for
-email vs. chat vs. code is available too, in Settings → Dictation.
+**Nothing leaves your machine. Ever.** The only network I/O in the entire app is
+two localhost sockets: ASR on `127.0.0.1:8080`, LLM on `127.0.0.1:3000`. No
+account, no API key, no telemetry, no analytics, no screenshots, no keystroke
+logging. Every line of code that touches the network is in
+[`src/Jot.Core/Clients/`](src/Jot.Core/Clients/) and you can read all of it.
+Audio files live under `%APPDATA%\Jot\sessions\` and are pruned (transcripts
+kept, audio dropped) after the retention window you set.
 
-## Install
+## Features
 
-1. Download the latest `Jot-x.y.z.dmg` from [Releases](../../releases/latest).
-2. Drag Jot into **Applications** and launch it from there — apps run from a
-   mounted disk image are sandboxed by macOS and the permissions you grant will
-   not stick.
+- **Live HUD pill** — waveform while recording, your words streaming in a
+  bubble above it, green/red terminal states; never steals focus, click-through.
+- **19 languages + auto-detect** — all of Nemotron 3.5's transcription-ready
+  locales (English US/UK, Spanish ×2, French ×2, Italian, Portuguese ×2, Dutch,
+  German, Turkish, Russian, Arabic, Hindi, Japanese, Korean, Vietnamese,
+  Ukrainian), plus model-side **Auto-detect**. en-US default; language rides
+  both the streaming session and the file path.
+- **Dictionary with ASR-level word boosting** — terms are sent as
+  `speech_contexts` to the ASR server, so jargon is spelled right *by the
+  acoustic model*, before any cleanup runs. Wrong→right replacement rules
+  enforce themselves afterwards. CSV import/export included.
+- **Never lose words** — offline dictations queue (5s/30s/120s backoff) and
+  auto-drain when the servers return; every failure is retryable from History;
+  recovered sessions surface via tray balloon.
+- **History** — full-text search (FTS5), raw/cleaned toggle, audio playback,
+  per-row Copy/Retry/Delete. Retention prunes aged audio, never transcripts.
+- **Earcons** — the Jot start/stop/success/error/lock sounds, synthesized at
+  startup (no sound files shipped).
+- **Settings** — server URLs with live connection test, language picker,
+  cleanup/sounds toggles, retention, launch-at-login (Startup-folder shortcut).
 
-<div align="center">
-<img src="docs/images/installer.png" width="480" alt="Drag Jot to Applications">
-</div>
+## Configuration
 
-Setup takes about two minutes and the app walks you through it:
+Everything lives in `%APPDATA%\Jot\`:
 
-1. **Paste a Gemini API key** — get one at
-   [Google AI Studio](https://aistudio.google.com/apikey). It is stored in your
-   macOS Keychain and only ever sent to Google.
-2. **Allow the microphone** — say hello and it advances by itself.
-3. **Allow Accessibility** — macOS requires this for any app that types into
-   another app.
-4. **Hold `fn` and talk.**
+| File | What |
+|---|---|
+| `settings.json` | servers, hotkey, language, toggles, retention |
+| `dictionary.json` | terms + replacement rules |
+| `history.db` | SQLite/FTS5 history of every session |
+| `sessions\` | per-session audio (pruned by retention) |
+| `logs\jot.log` | the diagnostic trail — every state transition lands here |
 
-**Cost:** you pay Google for what you dictate at
-[Gemini API pricing](https://ai.google.dev/pricing); a free tier exists and a
-typical dictation is a few seconds of audio. Jot itself is free and has no
-account.
+Handy `settings.json` keys:
 
-**Model:** Jot runs on Gemini's specialist transcription model,
-`gemini-3.5-transcribe`. Your key needs access to it; setup tells you up front if
-it does not, instead of failing on your first dictation.
-
-## How it works
-
-```
-fn down ─▶ capture (CAF on disk from t=0) ─▶ fn up ─▶ FLAC ─▶ Gemini transcribe
-                                                                    │
-   cursor ◀─ insert (AX → paste → clipboard) ◀─ [validate ◀─ tone pass] ─┘
-                                              (optional, off by default)
-                                                    │
-                                              History (SQLite)
-```
-
-A few decisions worth knowing about, because they are what make it feel solid:
-
-- **The capture graph is pre-warmed while idle**, so a key press only pays
-  `engine.start()` — 20-40ms instead of 75-150ms. Preparing is not recording: no
-  audio flows and no mic indicator appears until you actually hold the key.
-- **The mic drains one buffer past the stop**, because the audio tap only
-  delivers whole ~100ms chunks and tearing down immediately threw away the tail
-  of your last word.
-- **Insertion is a ladder**: Accessibility API first (no clipboard involved), then
-  a guarded paste that restores your clipboard, then a "copied — press ⌘V" chip.
-  It never blind-pastes into an app that stole focus mid-flight.
-- **A validation gate** guards the optional tone pass, catching the classic failure where the model *answers*
-  your audio instead of transcribing it, and falls back to the raw transcript.
-- **The paths that can lose words are tested.** `JotCore` is a headless Swift
-  package holding the state machine, hotkey grammar, audio, transcription,
-  formatting, insertion and history — so the failure modes above are exercised
-  without launching the app.
-
-The full design specs — including the failure matrix the reliability work is
-built from — are in [docs/design/](docs/design/).
-
-## Development
-
-Requires macOS 14+, Xcode 16+, and [xcodegen](https://github.com/yonaskolb/XcodeGen).
-The `.xcodeproj` is generated, not checked in.
-
-```bash
-brew install xcodegen
-./scripts/build.sh          # xcodegen generate + xcodebuild
-./scripts/test.sh           # swift test on JotCore
-open Jot.xcodeproj          # or work in Xcode
+```jsonc
+{
+  "AsrBaseUrl": "http://127.0.0.1:8080",
+  "LlmBaseUrl": "http://127.0.0.1:3000",
+  "Language": "en-US",          // or "auto", "de-DE", "hi-IN", ...
+  "StreamingEnabled": true,      // false = batch mode (file endpoint only)
+  "CleanupEnabled": true,        // false = raw ASR output, no LLM
+  "HotkeyVk": 192                // 0xC0 = backtick
+}
 ```
 
-Debug builds sign ad-hoc, so a clean clone needs no Apple account, certificate,
-or team membership — `./scripts/build.sh` works as-is. To build under your own
-team instead: `./scripts/build.sh DEVELOPMENT_TEAM=XXXXXXXXXX`. Only release
-builds (`scripts/release.sh`) need a real Developer ID.
+## Project layout
 
 ```
-App/            menu bar item, HUD pill, windows, design tokens, icon + sounds
-JotCore/        all engine logic, headless and testable
-  HotkeyEngine/     CGEventTap + the pure hold/lock/cancel grammar
-  AudioEngine/      crash-safe CAF capture, device changes, prewarming
-  TranscriptionClient/  Gemini calls, timeouts, retries, FLAC
-  FormattingPipeline/   cleanup prompt, validation gate, dictionary rules
-  InsertionEngine/      the AX → paste → clipboard ladder
-  HistoryStore/         GRDB index, recovery, retry queue, retention
-scripts/        build, test, icon, DMG, release
-docs/           privacy, releasing, design specs, research
+JotWin.sln
+src/
+  Jot.Core/            the engine — headless, UI-free, fully unit-tested
+    DictationStateMachine.cs   pure session-lifecycle transition function
+    HotkeyProcessor.cs         hold/tap/lock/cancel grammar (pure)
+    ValidationGate.cs          the never-insert-garbage gate (pure)
+    ReplacementEngine.cs       deterministic wrong→right rules (pure)
+    PromptV1.cs                the cleanup steering prompt
+    LanguageCatalog.cs         19 locales + auto-detect + tag stripping
+    HistoryStore.cs            SQLite + FTS5 session history
+    RetryQueue.cs              offline queue + backoff policy
+    Clients/
+      RealtimeAsrClient.cs     live WebSocket streaming (partials/finals)
+      LocalAsrClient.cs        file endpoint (fallback + retry path)
+      LocalLlmClient.cs        OpenAI-compatible cleanup client (reasoning-aware)
+  Jot.App/             the Windows shell
+    DictationCoordinator.cs    orchestrates a dictation flight end-to-end
+    Audio/WavRecorder.cs       WASAPI capture + live PCM16 tap + transcode
+    Interop/KeyboardHook.cs    WH_KEYBOARD_LL push-to-talk hook
+    Interop/SendInputInserter.cs  the Ctrl+V insertion ladder
+    Hud/HudPillWindow.cs       the non-activating HUD pill + live bubble
+    Sound/EarconPlayer.cs      synthesized earcons
+    Windows/                   tray, main, Settings, History windows
+tests/Jot.Core.Tests/  109 tests: pure-logic suites + 5 live integration tests
+scripts/               dev probes (python, uv-run)
+docs/
+  WINDOWS_PORT.md      port notes: what was mapped, what was trimmed
+  MACOS_README.md      the original macOS/Gemini Jot README
+  design/              the macOS design corpus (architecture, failure matrix…)
 ```
 
-Useful while hacking:
+## Troubleshooting
 
-```bash
-# every surface is reachable headlessly
-open "jot://settings/about"      # or /general /dictation /privacy /advanced
-open "jot://history"  "jot://dictionary"  "jot://onboarding/5"
+| Symptom | First look |
+|---|---|
+| Nothing pastes, text only in History | `%APPDATA%\Jot\logs\jot.log` — every transition is logged; if the last line is `Inserting` and the app died, it's the elevated-window guard (text is in the clipboard instead) |
+| Key press does nothing | Is Jot in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does `` ` `` type a backtick — meaning another app owns a lower-level hook? |
+| Streamed text never appears | Check `StreamingEnabled` in settings; the log shows `realtime connect failed` when the server lacks the endpoint (batch mode still works) |
+| Transcription fails | Server up? `curl http://127.0.0.1:8080/health` and `curl http://127.0.0.1:3000/health` |
+| App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Jot.exe` first (file locks) |
 
-# watch it work
-log show --last 5m --info --predicate 'subsystem == "com.ammaar.jot"'
-```
+## Acknowledgements
 
-Transcript text is logged as `private` and never appears in those logs.
-
-### Releasing
-
-`./scripts/release.sh` archives, signs with Developer ID, notarizes, staples,
-and builds the installer DMG. It refuses to produce a shareable DMG that is not
-notarized. See [docs/RELEASING.md](docs/RELEASING.md) for the certificate setup.
+- **[Jot for macOS](docs/MACOS_README.md)** by [Ammaar Reshi](https://x.com/ammaar) —
+  the original app, design corpus, and failure-mode discipline this port follows.
+- **[NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp)** and
+  [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) —
+  local streaming speech recognition.
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — local LLM inference.
+- **[NAudio](https://github.com/naudio/NAudio)** — WASAPI capture and resampling.
+- **[Microsoft.Data.Sqlite](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/)** —
+  history storage with FTS5.
+- **[xUnit](https://xunit.net/)** — the test net under all of it.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE). Bundled fonts (Google Sans Flex,
-Google Sans Code) are SIL OFL 1.1. The earcons are original works covered by the
-same Apache 2.0 license. Details in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache 2.0 — see [LICENSE](LICENSE).
