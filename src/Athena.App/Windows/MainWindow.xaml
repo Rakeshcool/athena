@@ -81,7 +81,7 @@
                             </Ellipse.RenderTransform>
                         </Ellipse>
                     </Grid>
-                    <TextBlock x:Name="HintText" Text="hold ` to dictate"
+                    <TextBlock x:Name="HintText" Text=""
                                Margin="8,0,0,0" FontSize="12" Opacity="0.85"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="440"/>
                 </StackPanel>

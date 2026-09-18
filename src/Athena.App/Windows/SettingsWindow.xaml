@@ -174,9 +174,18 @@
                 <ComboBox x:Name="LanguageBox" Margin="0,6,0,0"/>
 
                 <TextBlock Style="{StaticResource SectionLabel}" Text="Push-to-talk key"/>
-                <ui:TextBox x:Name="HotkeyDisplay" Text="` (backtick)" IsReadOnly="True" Margin="0,6,0,0"/>
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="HotkeyDisplay" Text="` (backtick)" FontSize="13"
+                               VerticalAlignment="Center"/>
+                    <ui:Button x:Name="RebindButton" Grid.Column="1" Content="Change key"
+                               Click="OnRebindClick" Padding="12,5" Margin="8,0,0,0"/>
+                </Grid>
                 <TextBlock Style="{StaticResource HelpText}"
-                           Text="Hold to talk. Hold + Space locks hands-free. Ctrl/Alt/Win+` passes through to apps."/>
+                           Text="A lone key — hold to talk, tap Space to lock hands-free. Esc cancels a capture. Ctrl/Alt/Win chords keep passing through to apps."/>
 
                 <TextBlock Style="{StaticResource SectionLabel}" Text="Launch"/>
                 <Grid Margin="0,6">

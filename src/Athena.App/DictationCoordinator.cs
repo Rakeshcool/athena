@@ -37,7 +37,9 @@ public enum Intent
 
 /// <summary>Everything an in-flight pipeline task needs to finish without
 /// touching state that may already belong to the NEXT session.</summary>
-internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string? TargetApp, WavRecorder Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise);
+internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string? TargetApp,
+    WavRecorder Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise,
+    ConcurrentQueue<byte[]> PendingAudio);
 
 public sealed class DictationCoordinator : IDisposable
 {
@@ -62,7 +64,14 @@ public sealed class DictationCoordinator : IDisposable
     private NoiseFloorEstimator _noise = new();
     private Task? _inFlight;
     private RealtimeAsrClient? _stream;
-    private readonly ConcurrentQueue<byte[]> _pendingAudio = new();
+    /// <summary>THE CURRENT session's audio queue. Reassigned (never cleared) per
+    /// Begin: a superseded session's pump holds its own queue reference, so a new
+    /// dictation starting during overlap cannot steal or pollute its audio.</summary>
+    private ConcurrentQueue<byte[]> _pendingAudio = new();
+    /// <summary>Sessions the user cancelled while already in the pipeline
+    /// (Finalizing/Transcribing/Inserting). Written from the UI thread (Esc),
+    /// consumed on pipeline background threads — hence concurrent.</summary>
+    private readonly ConcurrentDictionary<Guid, byte> _cancelRequested = new();
 
     /// <summary>Live partial transcript from the realtime stream (audio thread).
     /// The HUD shows it as you speak — the text is provisional until Done.</summary>
@@ -122,7 +131,18 @@ public sealed class DictationCoordinator : IDisposable
     }
 
     public void OnHotkeyUp() => ApplyGrammar(HotkeyEvent.HotkeyUp);
-    public void OnEscDown() => ApplyGrammar(HotkeyEvent.EscDown);
+    public void OnEscDown()
+    {
+        // The grammar returns to Idle at finalize, so an Esc during processing
+        // would die there unnoticed — route it straight to Cancel, which gates
+        // on the processing states itself.
+        if (_state is DictationState.Finalizing or DictationState.Transcribing or DictationState.Inserting)
+        {
+            Cancel();
+            return;
+        }
+        ApplyGrammar(HotkeyEvent.EscDown);
+    }
 
     private void ApplyGrammar(HotkeyEvent ev)
     {
@@ -150,24 +170,18 @@ public sealed class DictationCoordinator : IDisposable
             case Intent.Finalize: FinalizeSession(); break;
             case Intent.Cancel: Cancel(); break;
             case Intent.ShortTapHint:
-                Hint?.Invoke("Hold ` to talk. Hold + Space locks hands-free. Esc cancels.");
+                // A tap is a coaching moment AND an orphan session: the grammar
+                // went idle but the session is still recording — without this
+                // cancel the mic runs until Esc and the next key-down is
+                // swallowed by the busy guard. Cancel + discard, then coach.
+                Cancel(discardArtifacts: true);
+                Hint?.Invoke($"Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk. Hold + Space locks hands-free. Esc cancels.");
                 break;
             case Intent.AbortAccidental: Cancel(); break;
         }
     }
 
-    /// <summary>A tap is a coaching moment AND an orphan session: discard its
-    /// artifacts so nothing piles up (the macOS short-tap path discards too).</summary>
-    private void DiscardCurrentSessionArtifacts()
-    {
-        try
-        {
-            var folder = SessionFolder(_sessionId);
-            if (Directory.Exists(folder) && Directory.GetFiles(folder).Length == 0)
-                Directory.Delete(folder);
-        }
-        catch { /* best effort */ }
-    }
+
 
     private void Begin()
     {
@@ -187,7 +201,13 @@ public sealed class DictationCoordinator : IDisposable
         _targetApp = Interop.Native.ForegroundProcessName();
         _noise = new NoiseFloorEstimator();
         _latestLevel = 0;
-        _pendingAudio.Clear();
+        // Fresh queue PER SESSION (never Clear the old one): the previous
+        // session's stream pump still holds a reference to its queue and may
+        // still be draining it — clearing the shared queue stole that audio and
+        // raced the pump, cross-contaminating sessions under overlap.
+        _pendingAudio = new ConcurrentQueue<byte[]>();
+        var pendingAudio = _pendingAudio;   // captured: belongs to THIS session
+        var sessionId = _sessionId;         // captured: handlers stay per-session
         SetState(DictationState.Warming);
 
         try
@@ -196,11 +216,22 @@ public sealed class DictationCoordinator : IDisposable
             Directory.CreateDirectory(folder);
             var path = Path.Combine(folder, "audio.wav");
             _recorder = _recorderFactory();
+            // Per-session capture, NOT _field handlers: a superseded recorder's
+            // late events must never write the new session's noise/level state
+            // or fail its row (the bug was FailCurrent using _sessionId).
             _recorder.Level += l =>
             {
+                if (sessionId != _sessionId) return; // superseded session's tap
                 _latestLevel = l;
                 _noise.Ingest(l);
                 Level?.Invoke(l);
+            };
+            _recorder.Failed += ex =>
+            {
+                if (sessionId != _sessionId) return; // stale recorder failure
+                _log($"capture failed: {ex.Message}");
+                FileLog.Write($"capture failed: {ex}");
+                FailCurrent(DictationFailure.Audio, ex.Message);
             };
 
             // Live stream: connect now, feed audio as buffers arrive. The
@@ -220,23 +251,28 @@ public sealed class DictationCoordinator : IDisposable
                     Language = _settings.Language,
                     BoostPhrases = phrases is { Count: > 0 } ? phrases : null,
                 });
-                stream.PartialChanged += text => LivePartial?.Invoke(text);
+                stream.PartialChanged += text =>
+                {
+                    if (sessionId != _sessionId) return; // superseded stream
+                    LivePartial?.Invoke(text);
+                };
                 stream.Failed += reason => FileLog.Write(reason);
-                _recorder.PcmChunk += chunk => _pendingAudio.Enqueue(chunk.ToArray());
+                _recorder.PcmChunk += chunk => pendingAudio.Enqueue(chunk.ToArray());
                 _stream = stream;
-                _ = ConnectStreamAsync(stream);
+                _ = ConnectStreamAsync(stream, pendingAudio);
             }
-            _recorder.Failed += ex =>
-            {
-                _log($"capture failed: {ex.Message}");
-                FileLog.Write($"capture failed: {ex}");
-                FailCurrent(DictationFailure.Audio, ex.Message);
-            };
             _recorder.Start(path);
         }
         catch (Exception ex)
         {
             FileLog.Write($"mic open failed: {ex}");
+            // The stream (and its 20ms pump loop) was created before Start could
+            // fail — dispose it, or it spins forever on a dead session.
+            var stream = _stream;
+            _stream = null;
+            _recorder = null;
+            if (stream is not null) _ = Task.Run(async () => await stream.DisposeAsync());
+            try { Directory.Delete(SessionFolder(_sessionId), true); } catch { }
             FailCurrent(DictationFailure.NoMicrophone, ex.Message);
             return;
         }
@@ -255,7 +291,7 @@ public sealed class DictationCoordinator : IDisposable
     /// <summary>Connect the realtime socket, then pump queued + incoming PCM
     /// chunks (the queue already filled while connecting — nothing dropped).
     /// The pump runs for the whole session, trailing capture included.</summary>
-    private async Task ConnectStreamAsync(RealtimeAsrClient stream)
+    private async Task ConnectStreamAsync(RealtimeAsrClient stream, ConcurrentQueue<byte[]> pendingAudio)
     {
         try
         {
@@ -267,7 +303,7 @@ public sealed class DictationCoordinator : IDisposable
             }
             while (_stream == stream && !stream.IsFinished)
             {
-                while (_pendingAudio.TryDequeue(out var chunk))
+                while (pendingAudio.TryDequeue(out var chunk))
                     stream.SendAudio(chunk);
                 await Task.Delay(20);
             }
@@ -291,9 +327,10 @@ public sealed class DictationCoordinator : IDisposable
         if (recorder is null) return;
 
         SetState(DictationState.Finalizing);
-        var flight = new FlightContext(_sessionId, _startedAt, _targetApp, recorder, _stream, _noise);
+        var flight = new FlightContext(_sessionId, _startedAt, _targetApp, recorder, _stream, _noise, _pendingAudio);
         _recorder = null;
         _stream = null;
+        _pendingAudio = new ConcurrentQueue<byte[]>(); // the next session gets its own
 
         // Trailing capture: if the user is STILL SPEAKING at key-up, keep the
         // mic open until they stop (hand anticipates mouth). Bounded so a noisy
@@ -354,6 +391,22 @@ public sealed class DictationCoordinator : IDisposable
         if (wavPath is null || !File.Exists(wavPath))
         {
             FailFlight(flight, DictationFailure.NoAudio, "no audio file was written");
+            return;
+        }
+
+        // Esc'd mid-processing: stop before spending cleanup/insertion work.
+        // The row goes Cancelled with its audio kept — consistent with a
+        // recording-phase cancel (the words were wanted once, then refused).
+        if (_cancelRequested.TryRemove(flight.SessionId, out _))
+        {
+            var cancelledDur = WavRecorder.DurationOf(wavPath);
+            _history.Upsert(new DictationRecord
+            {
+                Id = flight.SessionId, StartedAt = flight.StartedAt,
+                Status = SessionStatus.Cancelled, AudioPath = wavPath,
+                AudioDurationSeconds = cancelledDur.TotalSeconds, TargetAppName = flight.TargetApp,
+            });
+            SetStateIfCurrent(flight, DictationState.Cancelled);
             return;
         }
 
@@ -496,6 +549,24 @@ public sealed class DictationCoordinator : IDisposable
             ModelId = "nemotron-asr + local-llm",
         });
 
+        // Esc'd between cleanup and insertion: the words were transcribed and
+        // polished, but the user refused them — no insertion, no reveal. The
+        // row KEEPS the transcript (that's what happened) which also lets
+        // retention prune it like any other terminal row.
+        if (_cancelRequested.TryRemove(flight.SessionId, out _))
+        {
+            _history.Upsert(new DictationRecord
+            {
+                Id = flight.SessionId, StartedAt = flight.StartedAt,
+                Status = SessionStatus.Cancelled, AudioPath = wavPath,
+                RawTranscript = raw, CleanedTranscript = cleaned,
+                AudioDurationSeconds = duration.TotalSeconds,
+                TargetAppName = flight.TargetApp,
+            });
+            SetStateIfCurrent(flight, DictationState.Cancelled);
+            return;
+        }
+
         SetStateIfCurrent(flight, DictationState.Inserting);
         var outcome = await _inserter.InsertAsync(cleaned, CancellationToken.None);
         var (status, evt) = outcome switch
@@ -620,10 +691,19 @@ public sealed class DictationCoordinator : IDisposable
         }
     }
 
-    private void Cancel()
+    private void Cancel(bool discardArtifacts = false)
     {
-        if (_state is not (DictationState.Warming or DictationState.Recording or
-            DictationState.Finalizing or DictationState.Transcribing)) return;
+        // Esc during Finalizing/Transcribing/Inserting must still mean "stop":
+        // the pipeline checks _cancelRequested before cleanup/insertion, and a
+        // superseded flight learns of its cancellation here too.
+        if (_state is DictationState.Finalizing or DictationState.Transcribing or DictationState.Inserting)
+        {
+            _cancelRequested[_sessionId] = 0;
+            _log("cancel requested during processing — insertion will be skipped");
+            SetState(DictationState.Cancelled);
+            return;
+        }
+        if (_state is not (DictationState.Warming or DictationState.Recording)) return;
         SetState(DictationState.Cancelled);
         var recorder = _recorder;
         var stream = _stream;
@@ -641,20 +721,47 @@ public sealed class DictationCoordinator : IDisposable
         }
         if (recorder is not null)
         {
-            var path = recorder.CurrentPath;
+            var sid = _sessionId;
+            var discard = discardArtifacts;
             _ = Task.Run(async () =>
             {
-                try { await recorder.StopAsync(); }
+                string? finalPath = null;
+                try { finalPath = await recorder.StopAsync(); }
                 catch { /* cancelling: best-effort stop */ }
-                if (path is not null)
+                if (discard)
                 {
-                    try { Audio.WavRepair.Repair(path); } catch { }
+                    // Files are closed once StopAsync returns — only now can the
+                    // folder actually go (deleting first would fail on the open
+                    // writer and orphan everything, the race the old inline
+                    // discard always lost).
+                    try { Directory.Delete(SessionFolder(sid), true); } catch { }
+                    return;
+                }
+                // The row was written with the in-progress capture path, which
+                // StopAsync just transcoded away (capture.wav → audio.wav):
+                // repoint it at the surviving file, or History/retention/retry
+                // all reference a file that no longer exists.
+                if (finalPath is not null)
+                {
+                    try
+                    {
+                        if (_history.Get(sid) is { } row)
+                        {
+                            row.AudioPath = finalPath;
+                            _history.Upsert(row);
+                        }
+                    }
+                    catch { /* best-effort */ }
                 }
             });
         }
         _history.Upsert(new DictationRecord
         {
             Id = _sessionId, StartedAt = _startedAt, Status = SessionStatus.Cancelled,
+            // Keep the audio reference: the upsert overwrites every column, and
+            // null here orphaned the file on disk — untracked, unrecoverable,
+            // invisible to retention. A discarded tap session references nothing.
+            AudioPath = discardArtifacts ? null : recorder?.CurrentPath,
             TargetAppName = _targetApp,
         });
     }
@@ -672,6 +779,7 @@ public sealed class DictationCoordinator : IDisposable
 
     private void FailFlight(FlightContext flight, DictationFailure kind, string message)
     {
+        _cancelRequested.TryRemove(flight.SessionId, out _); // dead flight: drop any cancel intent
         _history.Upsert(new DictationRecord
         {
             Id = flight.SessionId, StartedAt = flight.StartedAt, Status = SessionStatus.Failed,
@@ -743,9 +851,14 @@ public sealed class DictationCoordinator : IDisposable
         foreach (var r in _history.Recent(2000))
         {
             if (r.StartedAt >= cutoff) continue;
+            // QueuedForRetry/Recovered are NOT terminal: their audio is what a
+            // retry needs — pruning it would break recovery. Cancelled rows are
+            // the deliberate exception to the transcript rule: the user refused
+            // those words, so the audio is prunable by age like any terminal row.
             var terminal = r.Status is SessionStatus.Inserted or SessionStatus.Cancelled
                 or SessionStatus.Silent or SessionStatus.Failed or SessionStatus.CopiedToClipboard;
-            var hasTranscript = r.CleanedTranscript is not null || r.RawTranscript is not null;
+            var hasTranscript = r.CleanedTranscript is not null || r.RawTranscript is not null
+                || r.Status == SessionStatus.Cancelled;
             if (!terminal || !hasTranscript) continue;
             if (r.AudioPath is { } path && File.Exists(path))
             {

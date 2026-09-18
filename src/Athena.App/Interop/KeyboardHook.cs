@@ -36,7 +36,7 @@ public sealed class KeyboardHook : IDisposable
     private IntPtr _hook;
     private readonly LowLevelProc _proc;          // kept alive: GC must not collect the delegate
     private Thread? _thread;
-    private readonly ushort _hotkeyVk;
+    private volatile ushort _hotkeyVk;
 
     private volatile bool _sessionActive;
     private volatile bool _hotkeyHeld;
@@ -58,6 +58,22 @@ public sealed class KeyboardHook : IDisposable
     /// hook uses it to decide whether Esc/Space belong to the session.</summary>
     public bool SessionActive { get => _sessionActive; set => _sessionActive = value; }
     public bool HotkeyHeld => _hotkeyHeld;
+
+    /// <summary>Live rebind: change the matched key without tearing down the
+    /// hook thread (Settings → push-to-talk → Rebind). Takes effect on the next
+    /// key event.</summary>
+    public void SetHotkey(ushort vk) => _hotkeyVk = vk;
+
+    private volatile bool _captureMode;
+    /// <summary>While true, every non-modifier key-down is reported through
+    /// CaptureKeyDown and CONSUMED — the Rebind gesture in Settings. The hook
+    /// must do the capturing because it already eats the current hotkey: WPF
+    /// would never see that key. Esc ends the capture (Cancel) rather than
+    /// binding Esc as the hotkey.</summary>
+    public bool CaptureMode { get => _captureMode; set => _captureMode = value; }
+    /// <summary>Raised on the hook thread with the pressed VK (modifiers excluded).</summary>
+    public event Action<ushort>? CaptureKeyDown;
+    public event Action? CaptureCancelled;
 
     public KeyboardHook(uint hotkeyVk, uint modifiers)
     {
@@ -105,6 +121,24 @@ public sealed class KeyboardHook : IDisposable
                 case VK_LWIN or VK_RWIN: _win = !isUp; break;
                 case VK_LSHIFT or VK_RSHIFT: _shift = !isUp; break;
                 case VK_LMENU or VK_RMENU: _alt = !isUp; break;
+            }
+
+            if (_captureMode && !isUp)
+            {
+                if (vk == VK_ESCAPE)
+                {
+                    _captureMode = false;
+                    CaptureCancelled?.Invoke();
+                    return 1;
+                }
+                if (vk is not (VK_LCONTROL or VK_RCONTROL or VK_LWIN or VK_RWIN
+                                 or VK_LSHIFT or VK_RSHIFT or VK_LMENU or VK_RMENU))
+                {
+                    CaptureKeyDown?.Invoke(vk);
+                    return 1; // consumed: capture never leaks into the focused app
+                }
+                // Modifiers fall through (already tracked above) — a chord can't
+                // be captured, matching the lone-key binding rule.
             }
 
             if (vk == _hotkeyVk)

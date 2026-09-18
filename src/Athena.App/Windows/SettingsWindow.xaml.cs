@@ -18,16 +18,21 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
     private readonly AthenaSettings _settings;
     private readonly DictionaryStore _dictionary;
     private readonly Action _settingsChanged;
+    private readonly Interop.KeyboardHook? _hook;
 
-    public SettingsWindow(AthenaSettings settings, DictionaryStore dictionary, Action settingsChanged)
+    public SettingsWindow(AthenaSettings settings, DictionaryStore dictionary, Action settingsChanged,
+        Interop.KeyboardHook? hook = null)
     {
         InitializeComponent();
         _settings = settings;
         _dictionary = dictionary;
         _settingsChanged = settingsChanged;
+        _hook = hook;
         Load();
-        // Push-to-talk key is fixed for now (settings.json HotkeyVk editable).
-        HotkeyDisplay.Text = "` (backtick)";
+        // Push-to-talk key shows the live binding; "Change key" captures the
+        // next keystroke through the hook (it must be the hook: the hook
+        // consumes the current hotkey, WPF would never see it).
+        HotkeyDisplay.Text = Interop.HotkeyName.For((ushort)settings.HotkeyVk);
         // Save on every change AND on close: this is a tray app — a user picks
         // Hindi and dictates while the window is still open. Persisting only on
         // Closed made the picker read like it did nothing (the coordinator kept
@@ -71,6 +76,49 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
     /// <summary>Explicit Save (mockup's bottom bar). Everything already
     /// persists on change; this is the visible commitment + confirmation.</summary>
     private void OnSaveClick(object sender, RoutedEventArgs e) => Save();
+
+    /// <summary>Rebind gesture: arm the hook's capture mode, await one key
+    /// (Esc cancels), persist and hot-swap the live hook. Guarded against
+    /// rebinding mid-hold — the old key's up would never match the new
+    /// binding and strand the press-pairing state.</summary>
+    private async void OnRebindClick(object sender, RoutedEventArgs e)
+    {
+        if (_hook is null) return;
+        if (_hook.HotkeyHeld || _hook.SessionActive)
+        {
+            HotkeyDisplay.Text = "finish the current dictation first";
+            return;
+        }
+
+        RebindButton.Content = "Press a key…";
+        RebindButton.IsEnabled = false;
+        _hook.CaptureMode = true;
+        var captured = new TaskCompletionSource<ushort?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnCapture(ushort vk) => captured.TrySetResult(vk);
+        void OnCancelled() => captured.TrySetResult(null);
+        _hook.CaptureKeyDown += OnCapture;
+        _hook.CaptureCancelled += OnCancelled;
+        try
+        {
+            var vk = await captured.Task;
+            _hook.CaptureMode = false;
+            if (vk is { } key)
+            {
+                _settings.HotkeyVk = key;
+                _hook.SetHotkey(key);
+                Save(); // persist + "saved" tick; the hook is already live
+            }
+        }
+        finally
+        {
+            _hook.CaptureKeyDown -= OnCapture;
+            _hook.CaptureCancelled -= OnCancelled;
+            _hook.CaptureMode = false;
+            RebindButton.Content = "Change key";
+            RebindButton.IsEnabled = true;
+            HotkeyDisplay.Text = Interop.HotkeyName.For((ushort)_settings.HotkeyVk);
+        }
+    }
 
     private void Load()
     {

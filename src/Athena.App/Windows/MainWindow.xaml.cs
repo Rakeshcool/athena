@@ -45,7 +45,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _instance = this;
     }
 
-    private const string DefaultHint = "hold ` to dictate";
+    /// <summary>Built from the live hotkey binding at startup ("hold F9 to
+    /// dictate") — the binding is user-rebindable, so nothing hardcodes backtick.</summary>
+    private string _defaultHint = "hold the push-to-talk key to dictate";
     private static readonly System.Windows.Media.Brush ReadyBrush =
         new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4C, 0x9E, 0x63));
     private static readonly System.Windows.Media.Brush RecordingBrush =
@@ -217,6 +219,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         });
 
         _hook = new KeyboardHook(_settings.HotkeyVk, _settings.HotkeyModifiers);
+        _defaultHint = $"hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to dictate";
         _hook.HotkeyDown += () =>
         {
             FileLog.Write("hotkey down");
@@ -231,18 +234,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 }
                 else
                 {
-                    _grammarRefusedBegin = true;
+                    // Coordinator refused the begin (busy, no mic, …) — it owns
+                    // that feedback; the key-up is a no-op through it too.
                 }
             });
         };
         _hook.HotkeyUp += () =>
         {
             FileLog.Write("hotkey up");
-            Dispatcher.BeginInvoke(() =>
-            {
-                _coordinator.OnHotkeyUp();
-                _grammarRefusedBegin = false;
-            });
+            Dispatcher.BeginInvoke(() => _coordinator.OnHotkeyUp());
         };
         _hook.EscDown += () => Dispatcher.BeginInvoke(() => _coordinator.OnEscDown());
         _hook.SpaceLock += () => Dispatcher.BeginInvoke(() => _coordinator.HandleIntent(Athena.App.Intent.LockIn));
@@ -273,10 +273,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _retentionTimer.Start();
 
         RefreshHistory();
-        AppendLog("Athena started. Hold ` to talk; release to insert. Esc cancels.");
+        AppendLog($"Athena started. Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk; release to insert. Esc cancels.");
     }
-
-    private bool _grammarRefusedBegin;
 
     private void OnStateChanged(DictationState s)
     {
@@ -293,7 +291,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 break;
             default:
                 StatusText.Text = "ready";
-                HintText.Text = DefaultHint;
+                HintText.Text = _defaultHint;
                 SetPillDot(recording: false);
                 break;
         }
@@ -343,7 +341,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     /// <summary>The retry worker: drains due items every 10s, feeds results back
-    /// through RetryAsync, reschedules with backoff on further failure.</summary>
+    /// through RetryAsync, reschedules with the policy's backoff — bounded at
+    /// MaxAutoAttempts, after which the row is left Failed for manual Retry
+    /// (the unbounded loop here used to retry forever on a 30s cadence).</summary>
     private void StartRetryWorker()
     {
         _retryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
@@ -357,15 +357,31 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                     var text = await _coordinator!.RetryAsync(item.SessionId);
                     if (text is not null)
                     {
+                        // Actually deliver what the balloon promises: the manual
+                        // History retry copies too — this path just never did.
+                        try { System.Windows.Clipboard.SetText(text); }
+                        catch { /* clipboard can be momentarily locked */ }
                         _retryQueue.Remove(item.SessionId);
                         _tray?.ShowBalloon("Athena", "Recovered dictation is ready — copied to clipboard.");
+                        continue;
                     }
-                    else
+
+                    item.Attempt++;
+                    if (item.Attempt >= RetryPolicy.MaxAutoAttempts)
                     {
-                        item.Attempt++;
-                        item.NextAttemptAt = DateTime.Now + RetryPolicy.BackoffFor(item.Attempt);
-                        _retryQueue.Enqueue(item);
+                        // Auto-retries exhausted: leave the row in History (its
+                        // audio is on disk) for manual Retry.
+                        _retryQueue.Remove(item.SessionId);
+                        if (_history?.Get(item.SessionId) is { } row)
+                        {
+                            row.Status = Athena.Core.SessionStatus.Failed;
+                            row.ErrorMessage = "auto-retry exhausted";
+                            _history.Upsert(row);
+                        }
+                        continue;
                     }
+                    item.NextAttemptAt = DateTime.Now + RetryPolicy.BackoffFor(item.Attempt - 1);
+                    _retryQueue.Enqueue(item);
                 }
             }
             finally
@@ -433,7 +449,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             win.Activate();
             return;
         }
-        _settingsWindow = new SettingsWindow(_settings, _dictionary!, OnSettingsChanged);
+        _settingsWindow = new SettingsWindow(_settings, _dictionary!, OnSettingsChanged, _hook);
         // WPF windows are unusable once closed: Show() on a closed window
         // throws. Drop the reference on close so the next click builds fresh.
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
