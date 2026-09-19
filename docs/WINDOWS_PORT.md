@@ -1,6 +1,6 @@
 # Athena for Windows
 
-A Windows port of [Athena for macOS](MACOS_README.md) — hold a hotkey, speak, and polished
+A Windows port of [Athena for macOS](../mac_stuff/docs/MACOS_README.md) — hold a hotkey, speak, and polished
 text lands at your cursor — running **fully locally**: no cloud, no API key,
 no accounts. Audio never leaves the machine.
 

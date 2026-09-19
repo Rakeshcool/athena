@@ -199,8 +199,7 @@ tests/Athena.Core.Tests/  109 tests: pure-logic suites + 5 live integration test
 scripts/               dev probes (python, uv-run)
 docs/
   WINDOWS_PORT.md      port notes: what was mapped, what was trimmed
-  MACOS_README.md      the original macOS/Gemini Jot README
-  design/              the macOS design corpus (architecture, failure matrix…)
+mac_stuff/             the original macOS app (Swift), untracked — not part of the Windows build
 ```
 
 ## Troubleshooting
@@ -215,7 +214,7 @@ docs/
 
 ## Acknowledgements
 
-- **[Jot for macOS](docs/MACOS_README.md)** by [Ammaar Reshi](https://x.com/ammaar) —
+- **[Jot for macOS](mac_stuff/docs/MACOS_README.md)** by [Ammaar Reshi](https://x.com/ammaar) —
   the original app, design corpus, and failure-mode discipline this port follows.
 - **[NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp)** and
   [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) —

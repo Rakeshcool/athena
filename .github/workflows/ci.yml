@@ -20,29 +20,16 @@ on:
   pull_request:
 
 jobs:
-  core-tests:
-    name: JotCore tests
-    runs-on: macos-latest
+  windows-tests:
+    name: Build + tests (Windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run package tests
-        run: swift test --package-path JotCore
-
-  app-build:
-    name: App build
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install xcodegen
-        run: brew install xcodegen
-      - name: Generate project
-        run: xcodegen generate
-      - name: Build (unsigned)
-        run: |
-          xcodebuild build \
-            -project Jot.xcodeproj \
-            -scheme Jot \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
-            | tail -20
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build Athena.sln
+      - name: Test
+        run: dotnet test Athena.sln --nologo
