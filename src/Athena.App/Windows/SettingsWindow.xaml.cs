@@ -42,7 +42,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         // Implicit save, live: every control persists on change (the close-save
         // remains as a backstop). Each save flashes the "saved" tick.
         LanguageBox.SelectionChanged += (_, _) => Save();
-        foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, CrossCheckToggle, LaunchAtLoginToggle, WarmAccentToggle })
+        foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, FileFallbackToggle, CrossCheckToggle, LaunchAtLoginToggle, WarmAccentToggle })
         {
             toggle.Checked += (_, _) => Save();
             toggle.Unchecked += (_, _) => Save();
@@ -125,6 +125,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         CleanupToggle.IsChecked = _settings.CleanupEnabled;
         SoundsToggle.IsChecked = _settings.SoundsEnabled;
         StreamingToggle.IsChecked = _settings.StreamingEnabled;
+        FileFallbackToggle.IsChecked = _settings.FileFallbackEnabled;
         CrossCheckToggle.IsChecked = _settings.CrossCheckAsr;
         AsrUrlBox.Text = _settings.AsrBaseUrl;
         LlmUrlBox.Text = _settings.LlmBaseUrl;
@@ -145,6 +146,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         _settings.CleanupEnabled = CleanupToggle.IsChecked == true;
         _settings.SoundsEnabled = SoundsToggle.IsChecked == true;
         _settings.StreamingEnabled = StreamingToggle.IsChecked == true;
+        _settings.FileFallbackEnabled = FileFallbackToggle.IsChecked == true;
         _settings.CrossCheckAsr = CrossCheckToggle.IsChecked == true;
         _settings.AsrBaseUrl = NormalizeUrl(AsrUrlBox.Text);
         _settings.LlmBaseUrl = NormalizeUrl(LlmUrlBox.Text);

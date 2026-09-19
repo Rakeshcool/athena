@@ -35,13 +35,25 @@ public sealed class HudPillWindow : Window
 {
     private const double PillHeight = 48;
 
+    /// <summary>The live-text card grows to this height, then scrolls. ~7 lines
+    /// at 14px — enough scrollback to re-read a long dictation while it streams.</summary>
+    private const double LiveCardMaxHeight = 150;
+
     private readonly Border _pillBorder;
     private readonly StackPanel _barsPanel;
     private readonly TextBlock _label;
     private readonly Border _liveBorder;
     private readonly TextBlock _liveText;
+    private readonly ScrollViewer _liveScroll;
     private readonly WrapPanel _revealPanel;
     private int _revealGeneration;
+
+    /// <summary>When true the card auto-scrolls to the newest words (the mac
+    /// pill's tail anchoring, as sticky-bottom scrolling instead of truncation).
+    /// Scrolling up (wheel) unpins it so earlier text can be read; scrolling
+    /// back to the bottom re-pins. NOT reset per delta — partials arrive at
+    /// delta cadence and that would yank the user back to the end constantly.</summary>
+    private bool _stickToBottom = true;
     private readonly StackPanel _root;
     private readonly List<Rectangle> _bars = new();
     private readonly DoubleAnimation[] _barAnimations;
@@ -55,31 +67,44 @@ public sealed class HudPillWindow : Window
         ShowInTaskbar = false;
         AllowsTransparency = true;
         Background = System.Windows.Media.Brushes.Transparent;
-        Width = 480;
-        Height = 168;
+        Width = 600;
+        Height = 248;
         ShowActivated = false;
 
-        // Live-text bubble: dark rounded card, top-aligned over the pill.
+        // Live-text bubble: dark rounded card, top-aligned over the pill. The
+        // mac pill anchors the newest words with a tail window; here the FULL
+        // text lives in a scrollable card pinned to the bottom — nothing is
+        // ever cut, and earlier words stay reachable (user request: no 180-char
+        // cap, scrollable). The card is wheel-scrollable while visible: the
+        // window drops WS_EX_TRANSPARENT for exactly that span (clicks on the
+        // card hit it; everywhere else still passes through), then restores it.
         _liveText = new TextBlock
         {
             Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xEA, 0xED)),
             FontSize = 14,
             TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 52,
         };
         _revealPanel = new WrapPanel { Visibility = Visibility.Collapsed };
+        _liveScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = LiveCardMaxHeight,
+            Content = new Grid
+            {
+                Children = { _liveText, _revealPanel },
+            },
+        };
+        _liveScroll.ScrollChanged += OnLiveScrollChanged;
         _liveBorder = new Border
         {
             CornerRadius = new CornerRadius(10),
             Background = new SolidColorBrush(Color.FromArgb(200, 30, 31, 32)),
-            Padding = new Thickness(12, 8, 12, 8),
+            Padding = new Thickness(12, 10, 12, 10),
             HorizontalAlignment = HorizontalAlignment.Center,
-            MaxWidth = 440,
+            MaxWidth = 560, // the mac notice pill's 560pt width ceiling
             Visibility = Visibility.Collapsed,
-            Child = new Grid
-            {
-                Children = { _liveText, _revealPanel },
-            },
+            Child = _liveScroll,
         };
 
         _pillBorder = new Border
@@ -248,14 +273,51 @@ public sealed class HudPillWindow : Window
         }
         if (string.IsNullOrWhiteSpace(text))
         {
-            _liveBorder.Visibility = Visibility.Collapsed;
+            _stickToBottom = true; // a fresh session follows the newest words
+            SetBubbleVisible(visible: false);
             return;
         }
-        // Tail window: the newest words matter; a long dictation scrolls.
-        const int tail = 180;
-        _liveText.Text = text.Length <= tail ? text : "…" + text[^tail..];
-        _liveText.MaxHeight = 52; // ~2 lines
-        _liveBorder.Visibility = Visibility.Visible;
+        // Full text, never truncated — the card grows to LiveCardMaxHeight and
+        // then scrolls. Sticky-bottom keeps the newest words in view; the stick
+        // flag is deliberately NOT reset here (see _stickToBottom).
+        _liveText.Text = text;
+        SetBubbleVisible(visible: true);
+    }
+
+    /// <summary>Bubble visibility and mouse transparency move together: the card
+    /// is only ever interactive (wheel-scrollable) while it is on screen.</summary>
+    private void SetBubbleVisible(bool visible)
+    {
+        _liveBorder.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        SetHitTestTransparent(!visible);
+    }
+
+    private void SetHitTestTransparent(bool transparent)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return; // not shown yet; OnSourceInitialized sets the initial style
+        var ex = Win32.GetWindowLong(hwnd, Win32.GWL_EXSTYLE);
+        var updated = transparent
+            ? ex | Win32.WS_EX_TRANSPARENT
+            : ex & ~Win32.WS_EX_TRANSPARENT;
+        if (updated != ex)
+            Win32.SetWindowLong(hwnd, Win32.GWL_EXSTYLE, updated);
+    }
+
+    /// <summary>Sticky-bottom: follow content growth while pinned, track the
+    /// user's scroll position otherwise. Wheel-up unpins (read the beginning);
+    /// wheel back to the bottom re-pins and following resumes.</summary>
+    private void OnLiveScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.ExtentHeightChange != 0)
+        {
+            if (_stickToBottom) _liveScroll.ScrollToEnd();
+        }
+        else
+        {
+            _stickToBottom = _liveScroll.ScrollableHeight <= 0
+                || Math.Abs(_liveScroll.VerticalOffset - _liveScroll.ScrollableHeight) < 1.0;
+        }
     }
 
     // `.q .cut.is-marked { color: var(--chip-cut) }` — the site's cut red.
@@ -273,9 +335,9 @@ public sealed class HudPillWindow : Window
     /// form (the sentence the user got); cut runs show what was SAID (what they
     /// hear in their head). Fails quiet: only meaningful cuts reach here, and
     /// the diff itself renders unrelated texts as "no edit".
-    /// Long dictations show the same tail window as live text: the card is a
-    /// fixed-size overlay, and the edit that matters is at the END of the
-    /// sentence (the change of mind), not in the already-faded beginning.</summary>
+    /// Every segment renders (the mac CorrectionView's ForEach — no tail
+    /// window); the scrollable card holds the full edit with the newest words
+    /// pinned to the bottom.</summary>
     public void ShowCorrection(IReadOnlyList<TranscriptDiff.Segment> segments)
     {
         _revealGeneration++;
@@ -284,29 +346,14 @@ public sealed class HudPillWindow : Window
         _liveText.Visibility = Visibility.Collapsed;
         _revealPanel.Children.Clear();
 
-        // Tail window over segments: keep the trailing ~180 chars of the raw
-        // sentence. Walk backwards until the budget is spent; the first kept
-        // run may be trimmed at its START ("…" prefix marks the elision).
-        const int tailBudget = 180;
-        var first = segments.Count;
-        var budget = tailBudget;
-        while (first > 0 && budget > 0)
+        // Every segment renders — no tail elision (the mac CorrectionView's
+        // ForEach over segments). The card scrolls; the newest words stay
+        // pinned to the bottom where the change of mind lands.
+        foreach (var segment in segments)
         {
-            budget -= segments[first - 1].Text.Length;
-            first--;
-        }
-
-        var elided = first > 0;
-        var rendered = 0;
-        foreach (var segment in segments.Skip(first))
-        {
-            var text = segment.Text;
-            if (rendered == 0 && elided)
-                text = "…" + text.TrimStart();
-            rendered++;
             var run = new TextBlock
             {
-                Text = text,
+                Text = segment.Text,
                 FontSize = 14,
                 LineHeight = 20,
                 Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xEA, 0xED)),
@@ -314,8 +361,7 @@ public sealed class HudPillWindow : Window
             };
             _revealPanel.Children.Add(run);
         }
-        _revealPanel.Visibility = Visibility.Visible;
-        _liveBorder.Visibility = Visibility.Visible;
+        SetBubbleVisible(visible: true);
 
         // Beat 1: the mark. Red + strikethrough, held long enough to read.
         foreach (var run in CutRuns())
@@ -370,7 +416,7 @@ public sealed class HudPillWindow : Window
                 {
                     _revealPanel.Visibility = Visibility.Collapsed;
                     _liveText.Visibility = Visibility.Visible;
-                    _liveBorder.Visibility = Visibility.Collapsed;
+                    SetBubbleVisible(visible: false);
                 }
             };
             run.BeginAnimation(WidthProperty, widthAnim);
@@ -380,8 +426,8 @@ public sealed class HudPillWindow : Window
         if (!anyStarted) // degenerate card — just clear it
         {
             _revealPanel.Visibility = Visibility.Collapsed;
-            _liveBorder.Visibility = Visibility.Collapsed;
             _liveText.Visibility = Visibility.Visible;
+            SetBubbleVisible(visible: false);
         }
     }
 

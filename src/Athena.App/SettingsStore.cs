@@ -18,10 +18,18 @@ public sealed class AthenaSettings
     /// LanguageCatalog for the server-supported set).</summary>
     public string Language { get; set; } = Athena.Core.LanguageCatalog.Default;
 
-    /// <summary>Stream audio over the realtime WebSocket while speaking so text
-    /// appears live in the HUD. The file endpoint remains the always-on fallback
-    /// (and the retry path), so disabling this is purely a privacy/latency trade.</summary>
+    /// <summary>Stream audio over the realtime WebSocket so partial words
+    /// appear live in the HUD while speaking. Display only — the final inserted
+    /// text source is decided separately by <see cref="FileFallbackEnabled"/>.
+    /// Off: no WebSocket session at all; the HUD stays empty while recording.</summary>
     public bool StreamingEnabled { get; set; } = true;
+
+    /// <summary>Use the realtime stream's final transcript as the inserted text
+    /// (skipping the file endpoint for latency) instead of always re-decoding
+    /// the on-disk recording. Evidence for the default: a session's own audio
+    /// replayed realtime dropped mid-stream words the file decode returned
+    /// completely — the whole-utterance decode is the safer final source.</summary>
+    public bool FileFallbackEnabled { get; set; } = false;
 
     /// <summary>After a streamed dictation, also transcribe the on-disk recording
     /// and prefer it when the two disagree on the FIRST word. The stream decides
@@ -30,6 +38,16 @@ public sealed class AthenaSettings
     /// at once. Costs one local file transcription per dictation; the stream text
     /// always stands if the recording can't be transcribed.</summary>
     public bool CrossCheckAsr { get; set; } = true;
+
+    /// <summary>One-time migration of the pre-split StreamingEnabled key
+    /// (it controlled both partials and final source): a user who had streaming
+    /// off wanted no stream text anywhere — keep both off; a user on the old
+    /// default (on) gets today's default shape. Persisted so the migration
+    /// runs exactly once and never clobbers a later user choice.</summary>
+    public bool MigratedSplitToggles { get; set; }
+
+    [JsonIgnore]
+    public bool NeedsSplitTogglesMigration => !MigratedSplitToggles;
 
     public const uint MOD_CONTROL = 0x0002;
     public const uint MOD_WIN = 0x0008;
@@ -76,10 +94,25 @@ public static class SettingsStore
         try
         {
             if (File.Exists(Path_))
-                return JsonSerializer.Deserialize<AthenaSettings>(File.ReadAllText(Path_), Options) ?? new AthenaSettings();
+            {
+                var s = JsonSerializer.Deserialize<AthenaSettings>(File.ReadAllText(Path_), Options)
+                        ?? new AthenaSettings();
+                Migrate(s);
+                return s;
+            }
         }
         catch { /* corrupt settings fall back to defaults */ }
         return new AthenaSettings();
+    }
+
+    /// <summary>Forward-compatibility migrations, applied on every load.</summary>
+    private static void Migrate(AthenaSettings s)
+    {
+        if (s.NeedsSplitTogglesMigration)
+        {
+            s.FileFallbackEnabled = false; // whole-utterance decode as the final source
+            s.MigratedSplitToggles = true;
+        }
     }
 
     public static void Save(AthenaSettings settings)

@@ -153,9 +153,21 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
                         <TextBlock Text="Stream speech to text live" FontSize="13"/>
-                        <TextBlock Text="Partial words while dictating; failures fall back to the recording" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Partial words appear in the HUD while dictating" FontSize="12" Opacity="0.55"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="StreamingToggle" VerticalAlignment="Center"/>
+                </Grid>
+                <Border Style="{StaticResource RowDivider}"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Use the live stream for the final text" FontSize="13"/>
+                        <TextBlock Text="Off: insert the recording's full decode instead (safer; one extra transcription)" FontSize="12" Opacity="0.55"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="FileFallbackToggle" VerticalAlignment="Center"/>
                 </Grid>
                 <Border Style="{StaticResource RowDivider}"/>
                 <Grid Margin="0,6">

@@ -20,6 +20,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace Athena.Core.Clients;
 
@@ -28,6 +29,11 @@ namespace Athena.Core.Clients;
 /// Unit-testable without a socket.</summary>
 public sealed class RealtimeTranscript
 {
+    // Written by the socket receive loop (.delta/.completed events), read and
+    // sealed by FinishAsync on the pipeline thread — two threads, one object.
+    // Without this gate a concurrent List.Add corrupts _finals and a torn
+    // _partial read can drop the trailing words from the final transcript.
+    private readonly object _gate = new();
     private readonly List<string> _finals = new();
     private string _partial = "";
 
@@ -35,36 +41,58 @@ public sealed class RealtimeTranscript
     /// Finals join with a SPACE: the segments are continuous speech split by
     /// server endpointing, not paragraph breaks — a newline would ride all the
     /// way into the cleaned text and be INSERTED as hard line breaks.</summary>
-    public string Render =>
-        _finals.Count == 0 ? _partial
-        : _partial.Length == 0 ? string.Join(" ", _finals)
-        : string.Join(" ", _finals) + " " + _partial;
+    public string Render
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _finals.Count == 0 ? _partial
+                    : _partial.Length == 0 ? string.Join(" ", _finals)
+                    : string.Join(" ", _finals) + " " + _partial;
+            }
+        }
+    }
 
     public bool HasText => Render.Trim().Length > 0;
-    public IReadOnlyList<string> Finals => _finals;
+
+    public IReadOnlyList<string> Finals
+    {
+        get { lock (_gate) return _finals.ToArray(); }
+    }
 
     public void AbsorbDelta(string? delta)
     {
-        if (!string.IsNullOrEmpty(delta)) _partial += delta;
+        if (string.IsNullOrEmpty(delta)) return;
+        lock (_gate) _partial += delta;
     }
 
     public void AbsorbCompleted(string? transcript)
     {
-        if (!string.IsNullOrEmpty(transcript)) _finals.Add(transcript);
-        _partial = "";
+        lock (_gate)
+        {
+            if (!string.IsNullOrEmpty(transcript)) _finals.Add(transcript);
+            _partial = "";
+        }
     }
 
     /// <summary>Commit-time: any dangling partial becomes a final so it isn't lost.</summary>
     public void SealPartial()
     {
-        if (_partial.Trim().Length > 0) _finals.Add(_partial);
-        _partial = "";
+        lock (_gate)
+        {
+            if (_partial.Trim().Length > 0) _finals.Add(_partial);
+            _partial = "";
+        }
     }
 
     public void Reset()
     {
-        _finals.Clear();
-        _partial = "";
+        lock (_gate)
+        {
+            _finals.Clear();
+            _partial = "";
+        }
     }
 }
 
@@ -102,11 +130,31 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
     private readonly RealtimeSessionConfig _config;
     private readonly RealtimeTranscript _transcript = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    // The web client's contract, mechanically: its audio callback calls
+    // socket.send per buffer and the browser delivers frames IN ORDER. The
+    // channel + single sender task reproduce that FIFO guarantee. (The
+    // previous fire-and-forget SendAudio-per-chunk raced a semaphore between
+    // concurrent send tasks — two chunks could swap acquisition order and
+    // reach the server as scrambled audio slices: mangled words mid-sentence.)
+    private readonly Channel<ReadOnlyMemory<byte>> _outgoing =
+        Channel.CreateUnbounded<ReadOnlyMemory<byte>>(
+            new UnboundedChannelOptions { SingleReader = true });
+    private Task? _senderLoop;
+    // The reference client's handshake: it waits for session.updated before
+    // the first audio byte — audio never precedes an acknowledged session
+    // shape (rate, language).
+    private readonly TaskCompletionSource _sessionUpdated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Server-reported decode progress (seconds × 1000; reader thread only).
+    private long _audioProcessedTicks;
 
     private volatile bool _committed;
     private volatile bool _committedAck;
     private volatile bool _dead;
     private Task? _receiveLoop;
+    /// <summary>Total PCM bytes actually sent to the socket. The no-text
+    /// diagnosis needs it: "sent 360 KB, no events" is a server problem;
+    /// "sent 0 KB" is a client pump problem. Those are different bugs.</summary>
+    private long _bytesSent;
 
     /// <summary>Rendered live text changed (finals + current partial).</summary>
     public event Action<string>? PartialChanged;
@@ -158,6 +206,7 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
         try
         {
             await _ws.ConnectAsync(new Uri(url), ct);
+            _receiveLoop = ReceiveLoopAsync(CancellationToken.None); // reader up FIRST: it consumes the handshake
 
             var boost = _config.BoostPhrases is { Count: > 0 }
                 ? JsonSerializer.Serialize(new[]
@@ -183,36 +232,94 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
                         speech_contexts = JsonSerializer.Deserialize<JsonElement>(boost),
                     },
             });
+            // The reference client's handshake, matched: the server sends
+            // session.created on connect; the client sends session.update and
+            // WAITS for session.updated before audio flows. (We previously
+            // fired session.update and streamed immediately — the config an
+            // ASR stream needs was never acknowledged.)
             await SendTextAsync(session, ct);
-            _receiveLoop = ReceiveLoopAsync(CancellationToken.None); // outlives ct
+            await WaitEventAsync("session.updated", TimeSpan.FromSeconds(15));
+
+            _senderLoop = SenderLoopAsync(); // acked session first, then audio
             return true;
         }
         catch (Exception ex)
         {
-            Failed?.Invoke($"realtime connect failed ({url[_baseUrl.Length..]}): {ex.Message}");
+            try { _ws.Abort(); } catch { } // a failed path attempt must not poison the retry
+            var msg = $"realtime connect failed ({url[_baseUrl.Length..]}): {ex.Message}";
+            FileLogNote(msg);
+            Failed?.Invoke(msg);
             return false;
         }
     }
 
-    /// <summary>Push one PCM16 mono LE chunk from the capture thread. Errors
-    /// kill the stream (fallback handles it) — they must never throw into NAudio.</summary>
-    public void SendAudio(ReadOnlyMemory<byte> pcm16Mono)
+    /// <summary>Wait for the reader to observe the session.updated ACK —
+    /// the gate the reference client holds audio behind. session.created is
+    /// informational (server hello) and not gated on. Timeout ⇒ connect
+    /// fails ⇒ path retry/file fallback, never a silently misconfigured
+    /// stream.</summary>
+    private async Task WaitEventAsync(string name, TimeSpan timeout)
     {
-        if (_dead || _committed || _ws.State != WebSocketState.Open) return;
-        _ = SendAudioAsync(pcm16Mono);
+        var done = await Task.WhenAny(_sessionUpdated.Task, Task.Delay(timeout));
+        if (done != _sessionUpdated.Task)
+            throw new TimeoutException($"realtime handshake: no {name} within {timeout.TotalSeconds:F0}s");
+        if (_dead)
+            throw new InvalidOperationException("realtime stream died during handshake");
     }
 
-    private async Task SendAudioAsync(ReadOnlyMemory<byte> data)
+    /// <summary>Push one PCM16 mono LE chunk from the capture thread. Chunks
+    /// are queued in arrival order; the single sender task delivers them FIFO
+    /// to the socket. Errors kill the stream (fallback handles it) — they
+    /// must never throw into NAudio.</summary>
+    public void SendAudio(ReadOnlyMemory<byte> pcm16Mono)
     {
+        if (_dead || _committed) return;
+        _outgoing.Writer.TryWrite(pcm16Mono);
+    }
+
+    /// <summary>Uniform-frame cadence: the reference client streams 100ms
+    /// chunks (CHUNK_MS_DEFAULT). WASAPI hands us ~10ms slivers; the sender
+    /// re-frames them into ~100ms wire frames so the server sees exactly what
+    /// its proven clients send. Byte order is preserved exactly.</summary>
+    private const int ChunkMs = 100;
+
+    /// <summary>The socket's one writer: channel order = wire order. Exits
+    /// when the channel is completed and drained (finish) or on the first
+    /// dead/commit/closed signal.</summary>
+    private async Task SenderLoopAsync()
+    {
+        var frameBytes = Math.Max(2, (int)((long)_config.SampleRate * ChunkMs / 1000) * 2);
+        var carry = Array.Empty<byte>();
         try
         {
-            await _sendGate.WaitAsync();
-            try
+            while (await _outgoing.Reader.WaitToReadAsync())
+                while (_outgoing.Reader.TryRead(out var chunk))
+                {
+                    if (_dead || _committed) return;
+                    if (_ws.State != WebSocketState.Open)
+                    {
+                        KillStream($"realtime send aborted (socket {_ws.State})");
+                        return;
+                    }
+                    // Accumulate slivers; emit every whole ~100ms frame.
+                    var combined = new byte[carry.Length + chunk.Length];
+                    Array.Copy(carry, combined, carry.Length);
+                    chunk.Span.CopyTo(combined.AsSpan(carry.Length));
+                    var whole = combined.Length - combined.Length % frameBytes;
+                    if (whole > 0)
+                    {
+                        await _ws.SendAsync(new ArraySegment<byte>(combined, 0, whole),
+                            WebSocketMessageType.Binary, true, CancellationToken.None);
+                        Interlocked.Add(ref _bytesSent, whole);
+                    }
+                    carry = combined.AsSpan(whole).ToArray();
+                }
+            // Channel completed (finish): flush the trailing partial frame.
+            if (carry.Length > 0 && !_dead && !_committed && _ws.State == WebSocketState.Open)
             {
-                if (_dead || _committed || _ws.State != WebSocketState.Open) return;
-                await _ws.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
+                await _ws.SendAsync(carry, WebSocketMessageType.Binary, true, CancellationToken.None);
+                Interlocked.Add(ref _bytesSent, carry.Length);
             }
-            finally { _sendGate.Release(); }
         }
         catch (Exception ex)
         {
@@ -273,6 +380,11 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
             {
                 var d = doc.RootElement.TryGetProperty("delta", out var dd) ? dd.GetString() : null;
                 _transcript.AbsorbDelta(LanguageCatalog.StripLanguageTags(d ?? ""));
+                // The reference client reads audio_processed off the delta
+                // events: how many seconds the server has actually decoded.
+                if (doc.RootElement.TryGetProperty("audio_processed", out var ap)
+                    && ap.TryGetDouble(out var secs))
+                    Interlocked.Exchange(ref _audioProcessedTicks, (long)(secs * 1000));
                 PartialChanged?.Invoke(_transcript.Render);
             }
             else if (type.EndsWith(".completed"))
@@ -288,9 +400,10 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
                     && e.TryGetProperty("message", out var m2) ? m2.GetString() : null;
                 KillStream($"realtime error: {m ?? "unknown"}");
             }
-            // input_audio_buffer.committed (ack), session.created/updated: no-ops
-            // except the committed ack, which FinishAsync waits on.
+            // session.updated ACKs the config (handshake gate); the committed
+            // ack is what FinishAsync waits on.
             if (type == "input_audio_buffer.committed") _committedAck = true;
+            else if (type == "session.updated") _sessionUpdated.TrySetResult();
         }
         catch (JsonException)
         {
@@ -312,14 +425,29 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
 
     private static void FileLogNote(string msg) => LogHook?.Invoke(msg);
 
-    /// <summary>The stream is dead or committed — the pump loop uses this to stop.</summary>
-    public bool IsFinished => _dead || _committed;
+    /// <summary>The pump loop uses this to stop. Commit alone must NOT finish
+    /// the pump: after input_audio_buffer.commit the server still needs the
+    /// residual queued audio — and on the coordinator side the pump is what
+    /// feeds trailing-capture audio (key-up while still speaking). Exiting at
+    /// commit stranded every slice after finalize, so the streamed transcript
+    /// silently lost the trailing words the mic kept hearing. Keep sending
+    /// until the ack (server done) or death.</summary>
+    public bool IsFinished => _dead || (_committed && _committedAck);
+
+    /// <summary>Socket usable — the pump's other exit condition (covers the
+    /// no-ack grace path, where FinishAsync closes without an ack).</summary>
+    public bool IsOpen => _ws.State == WebSocketState.Open;
+
+    /// <summary>The sample rate declared in session.update (the capture's
+    /// native rate — the web client's contract; logging/diagnosis only).</summary>
+    public int DeclaredSampleRate => _config.SampleRate;
 
     /// <summary>Discard everything buffered server-side (Esc cancel) and close.
     /// Fire-and-forget safe: best-effort by contract.</summary>
     public async Task CancelAsync()
     {
         _dead = true;
+        _outgoing.Writer.TryComplete();
         try
         {
             if (_ws.State == WebSocketState.Open)
@@ -348,7 +476,23 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
 
         try
         {
-            // In-flight audio sends first, then the commit marker.
+            // The web client's order, mechanically: all queued audio bytes
+            // cross the wire BEFORE the commit marker. (The earlier version
+            // committed synchronously while the queue still held unsent
+            // trailing-capture audio — those words never reached the server.)
+            if (_senderLoop is not null)
+            {
+                _outgoing.Writer.TryComplete();
+                await _senderLoop; // every queued chunk sent, then the loop exits
+            }
+
+            if (_ws.State != WebSocketState.Open)
+            {
+                KillStream($"realtime socket died before commit (sent {Interlocked.Read(ref _bytesSent) / 1024.0:F0} KB)");
+                return _transcript.HasText ? _transcript.Render : null;
+            }
+
+            // Queue empty and socket open — commit.
             await _sendGate.WaitAsync(ct);
             try
             {
@@ -374,6 +518,11 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
                 }
                 if (_transcript.HasText && _receiveLoop is { IsCompleted: true })
                     break;
+                // The server closed on us: the transcript's state is final —
+                // waiting longer cannot add words (the reference's wait_final
+                // surfaces socket death the same way).
+                if (_ws.State != WebSocketState.Open)
+                    break;
                 await Task.Delay(25, ct);
             }
         }
@@ -392,13 +541,18 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
         }
         _transcript.SealPartial();
         var sealedText = _transcript.HasText ? _transcript.Render : null;
-        if (sealedText is null) KillStream("realtime produced no text");
+        if (sealedText is null)
+            KillStream($"realtime produced no text (sent {Interlocked.Read(ref _bytesSent) / 1024.0:F0} KB, " +
+                       $"socket {_ws.State}, commit ack {_committedAck}, " +
+                       $"server decoded {Interlocked.Read(ref _audioProcessedTicks) / 1000.0:F1}s)");
         return sealedText;
     }
 
     public ValueTask DisposeAsync()
     {
         _dead = true;
+        _outgoing.Writer.TryComplete();
+        _sessionUpdated.TrySetCanceled(); // unblock a connect waiting for the ack
         try { _ws.Abort(); } catch { }
         _ws.Dispose();
         _sendGate.Dispose();

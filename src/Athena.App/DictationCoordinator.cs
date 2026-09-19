@@ -38,8 +38,7 @@ public enum Intent
 /// <summary>Everything an in-flight pipeline task needs to finish without
 /// touching state that may already belong to the NEXT session.</summary>
 internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string? TargetApp,
-    WavRecorder Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise,
-    ConcurrentQueue<byte[]> PendingAudio);
+    WavRecorder Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise);
 
 public sealed class DictationCoordinator : IDisposable
 {
@@ -64,10 +63,6 @@ public sealed class DictationCoordinator : IDisposable
     private NoiseFloorEstimator _noise = new();
     private Task? _inFlight;
     private RealtimeAsrClient? _stream;
-    /// <summary>THE CURRENT session's audio queue. Reassigned (never cleared) per
-    /// Begin: a superseded session's pump holds its own queue reference, so a new
-    /// dictation starting during overlap cannot steal or pollute its audio.</summary>
-    private ConcurrentQueue<byte[]> _pendingAudio = new();
     /// <summary>Sessions the user cancelled while already in the pipeline
     /// (Finalizing/Transcribing/Inserting). Written from the UI thread (Esc),
     /// consumed on pipeline background threads — hence concurrent.</summary>
@@ -201,12 +196,6 @@ public sealed class DictationCoordinator : IDisposable
         _targetApp = Interop.Native.ForegroundProcessName();
         _noise = new NoiseFloorEstimator();
         _latestLevel = 0;
-        // Fresh queue PER SESSION (never Clear the old one): the previous
-        // session's stream pump still holds a reference to its queue and may
-        // still be draining it — clearing the shared queue stole that audio and
-        // raced the pump, cross-contaminating sessions under overlap.
-        _pendingAudio = new ConcurrentQueue<byte[]>();
-        var pendingAudio = _pendingAudio;   // captured: belongs to THIS session
         var sessionId = _sessionId;         // captured: handlers stay per-session
         SetState(DictationState.Warming);
 
@@ -214,7 +203,11 @@ public sealed class DictationCoordinator : IDisposable
         {
             var folder = SessionFolder(_sessionId);
             Directory.CreateDirectory(folder);
-            var path = Path.Combine(folder, "audio.wav");
+            // capture.wav, NOT audio.wav: StopAsync transcodes the raw capture
+            // to audio.wav. The same name for both made the transcode write
+            // the file it was reading — it failed on every session (silently,
+            // by design) and every History row kept a 48kHz float capture.
+            var path = Path.Combine(folder, "capture.wav");
             _recorder = _recorderFactory();
             // Per-session capture, NOT _field handlers: a superseded recorder's
             // late events must never write the new session's noise/level state
@@ -234,50 +227,55 @@ public sealed class DictationCoordinator : IDisposable
                 FailCurrent(DictationFailure.Audio, ex.Message);
             };
 
-            // Live stream: connect now, feed audio as buffers arrive. The
-            // PcmChunk subscription happens BEFORE connecting so the very
-            // first words queue while the socket opens — nothing is dropped;
-            // every stream failure degrades to the file path.
-            _stream = null;
+            // The realtime stream is created and subscribed BEFORE Start —
+            // the web client's exact ordering (socket + session.update exist
+            // before getUserMedia's first buffer). No queue, no pump: the
+            // audio callback feeds the client's FIFO channel directly, the
+            // single sender task is the socket's only writer. (The queue+
+            // 20ms-pump design both stranded post-key-up audio in the queue
+            // and raced concurrent SendAsync calls — a semaphore let two
+            // chunks swap wire order, scrambling the audio.)
             if (_settings.StreamingEnabled)
             {
-                // Dictionary terms ride the realtime session as ASR-level word
-                // boosting (speech_contexts) — jargon spelled right from the start.
                 var dict = _dictionary?.Snapshot();
                 var phrases = dict is null ? null : dict.Terms.Select(t => t.Term).ToList();
                 var stream = new RealtimeAsrClient(_settings.AsrBaseUrl, new RealtimeSessionConfig
                 {
-                    SampleRate = 16000,
+                    SampleRate = _recorder.NativeSampleRate ?? 48000,
                     Language = _settings.Language,
                     BoostPhrases = phrases is { Count: > 0 } ? phrases : null,
                 });
                 stream.PartialChanged += text =>
                 {
-                    if (sessionId != _sessionId) return; // superseded stream
+                    // Superseded session OR finalized/cancelled one: the fields
+                    // are torn down (or belong to the next session) — never
+                    // paint a dying stream's text over fresh state.
+                    if (sessionId != _sessionId || _stream is null) return;
                     LivePartial?.Invoke(text);
                 };
-                stream.Failed += reason => FileLog.Write(reason);
-                _recorder.PcmChunk += chunk => pendingAudio.Enqueue(chunk.ToArray());
                 _stream = stream;
-                _ = ConnectStreamAsync(stream, pendingAudio);
             }
+
+            // Audio callback → FIFO channel. Unconditional: SendAudio no-ops
+            // once the stream is dead/committed, so a session that fell back
+            // to file transcription just discards.
+            if (_stream is not null)
+                _recorder.PcmChunk += chunk => _stream?.SendAudio(chunk);
             _recorder.Start(path);
         }
         catch (Exception ex)
         {
             FileLog.Write($"mic open failed: {ex}");
-            // The stream (and its 20ms pump loop) was created before Start could
-            // fail — dispose it, or it spins forever on a dead session.
-            var stream = _stream;
-            _stream = null;
             _recorder = null;
-            if (stream is not null) _ = Task.Run(async () => await stream.DisposeAsync());
             try { Directory.Delete(SessionFolder(_sessionId), true); } catch { }
             FailCurrent(DictationFailure.NoMicrophone, ex.Message);
             return;
         }
 
         SetState(DictationState.Recording);
+
+        if (_stream is { } liveStream)
+            _ = ConnectStreamAsync(liveStream);
 
         _history.Upsert(new DictationRecord
         {
@@ -288,25 +286,22 @@ public sealed class DictationCoordinator : IDisposable
         });
     }
 
-    /// <summary>Connect the realtime socket, then pump queued + incoming PCM
-    /// chunks (the queue already filled while connecting — nothing dropped).
-    /// The pump runs for the whole session, trailing capture included.</summary>
-    private async Task ConnectStreamAsync(RealtimeAsrClient stream, ConcurrentQueue<byte[]> pendingAudio)
+    /// <summary>Connect the realtime socket. Audio is NOT pumped here: the
+    /// capture callback feeds the client's FIFO channel directly (the web
+    /// client's mechanism — every byte is queued in arrival order and one
+    /// sender task writes the socket, so wire order = capture order). This
+    /// method only establishes the session and reports the outcome.</summary>
+    private async Task ConnectStreamAsync(RealtimeAsrClient stream)
     {
         try
         {
             if (!await stream.ConnectAsync(CancellationToken.None))
             {
-                if (_stream == stream) _stream = null;
                 await stream.DisposeAsync();
+                if (_stream == stream) _stream = null;
                 return;
             }
-            while (_stream == stream && !stream.IsFinished)
-            {
-                while (pendingAudio.TryDequeue(out var chunk))
-                    stream.SendAudio(chunk);
-                await Task.Delay(20);
-            }
+            FileLog.Write($"streaming session open (declared {stream.DeclaredSampleRate} Hz)");
         }
         catch (Exception ex)
         {
@@ -327,10 +322,9 @@ public sealed class DictationCoordinator : IDisposable
         if (recorder is null) return;
 
         SetState(DictationState.Finalizing);
-        var flight = new FlightContext(_sessionId, _startedAt, _targetApp, recorder, _stream, _noise, _pendingAudio);
+        var flight = new FlightContext(_sessionId, _startedAt, _targetApp, recorder, _stream, _noise);
         _recorder = null;
         _stream = null;
-        _pendingAudio = new ConcurrentQueue<byte[]>(); // the next session gets its own
 
         // Trailing capture: if the user is STILL SPEAKING at key-up, keep the
         // mic open until they stop (hand anticipates mouth). Bounded so a noisy
@@ -346,14 +340,31 @@ public sealed class DictationCoordinator : IDisposable
                 if (wasSpeaking)
                     await CaptureTrailingSpeechAsync(flight.Recorder, threshold);
                 var wavPath = await flight.Recorder.StopAsync();
-                string? streamed = null;
+                var streamed = (string?)null;
                 if (flight.Stream is not null)
                 {
-                    streamed = await flight.Stream.FinishAsync(StreamFinishGrace, CancellationToken.None);
+                    // Policy decides whether the stream's final is worth
+                    // collecting: with file-fallback off the stream is DISPLAY
+                    // only — its text will never be inserted, so don't make
+                    // the user wait for the commit round-trip; abandon like a
+                    // cancel (clear discards buffered audio server-side).
+                    if (TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
+                        == TranscriptSource.LiveStream)
+                    {
+                        // Web-client ordering lives inside FinishAsync: the FIFO
+                        // channel is completed and fully drained BEFORE the commit
+                        // marker goes out — trailing-capture audio included.
+                        streamed = await flight.Stream.FinishAsync(StreamFinishGrace, CancellationToken.None);
+                        FileLog.Write(streamed is not null
+                            ? "streamed transcript used (file fallback skipped)"
+                            : "stream produced no text — falling back to file transcription");
+                    }
+                    else
+                    {
+                        await flight.Stream.CancelAsync();
+                        FileLog.Write("stream display-only (file fallback owns the final) — abandoned at key-up");
+                    }
                     await flight.Stream.DisposeAsync();
-                    FileLog.Write(streamed is not null
-                        ? "streamed transcript used (file fallback skipped)"
-                        : "stream produced no text — falling back to file transcription");
                 }
                 await RunPipelineAsync(flight, wavPath, streamed);
             }
@@ -434,10 +445,15 @@ public sealed class DictationCoordinator : IDisposable
             AudioDurationSeconds = duration.TotalSeconds, TargetAppName = flight.TargetApp,
         });
 
-        // The stream already produced the transcript: skip the file endpoint
-        // entirely (zero extra latency). Otherwise transcribe the WAV — the
-        // stream's failure never costs the words, the file is always there.
-        if (hasStreamedText)
+        // The stream produced a transcript AND policy says the stream is the
+        // final source (streaming + file-fallback both on): skip the file
+        // endpoint entirely (zero extra latency). Otherwise — fallback off,
+        // streaming off, or a stream that never produced text — transcribe
+        // the WAV: the whole-utterance decode is the final source, and the
+        // stream's failure never costs the words (the file is always there).
+        if (hasStreamedText &&
+            TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
+                == TranscriptSource.LiveStream)
         {
             var final = streamedRaw!;
             if (_settings.CrossCheckAsr)

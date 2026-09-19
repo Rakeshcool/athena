@@ -194,6 +194,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             // the you're-in-another-app case.
             HintText.Text = text;
         });
+        // When the pill returns to ready (and on explicit terminal states), the
+        // last partial must not linger as if it were current — the coordinator
+        // can no longer retract it once the session is torn down (a live event
+        // arriving after teardown is dropped, by design). The state change is
+        // the retraction.
+        _coordinator.StateChanged += s => Dispatcher.BeginInvoke(() =>
+        {
+            if (s is DictationState.Idle or DictationState.Done or DictationState.Failed
+                or DictationState.Cancelled)
+                _hud?.SetLiveText(null);
+        });
         _coordinator.CorrectionReady += (raw, cleaned) => Dispatcher.BeginInvoke(() =>
         {
             // The reveal: show the edit, not just the result — cuts strike

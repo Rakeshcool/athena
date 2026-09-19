@@ -13,7 +13,9 @@
 using System.IO;
 using Athena.Core;
 using NAudio.CoreAudioApi;
+using NAudio.Dsp;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace Athena.App.Audio;
 
@@ -31,8 +33,9 @@ public sealed class WavRecorder : IDisposable
     // constructed the recorder (WarmRecorderPool builds on a worker thread).
     private string? _deviceId;
 
-    // Live-tap state: source format observed so far + sub-frame carry bytes.
-    private WaveFormat? _tapSourceFormat;
+    // Live-tap state: sub-frame carry bytes only — no client-side resampler
+    // (the web client's contract: stream native-rate mono PCM16, declare the
+    // native rate; the server resamples internally).
     private byte[] _tapCarry = Array.Empty<byte>();
 
     /// <summary>0…1 Athena level per buffer (AudioLevelCurve), for the HUD and the
@@ -47,6 +50,21 @@ public sealed class WavRecorder : IDisposable
     /// <summary>Latest metered level, readable synchronously by the trailing-
     /// capture loop (events alone would need a closure to poll).</summary>
     public volatile float CurrentLevel;
+
+    /// <summary>The capture graph's actual format. The realtime stream declares
+    /// THIS rate (the web client's contract: "sample_rate: context.sampleRate")
+    /// — read it only after Start().</summary>
+    public WaveFormat? CaptureFormat => _capture?.WaveFormat;
+
+    /// <summary>The capture graph's native sample rate, available BEFORE
+    /// Start() once Warm() has built the graph (the warm pool guarantees
+    /// this). Lets the coordinator open the realtime stream with the
+    /// correct declared rate before the first buffer exists — the session
+    /// must exist to receive the first words, exactly like the web client
+    /// (socket open → session.update → THEN getUserMedia flows).
+    /// Null only on a cold, never-warmed recorder; callers fall back to
+    /// 48000, the Windows shared-mode default.</summary>
+    public int? NativeSampleRate => _capture?.WaveFormat.SampleRate;
 
     /// <summary>Monotonic capture clock for the hotkey grammar and duration math.</summary>
     public static double Now => Environment.TickCount64 / 1000.0;
@@ -116,7 +134,10 @@ public sealed class WavRecorder : IDisposable
         _rawPath = path;
         EnsureCaptureGraph();
         _writer = new WaveFileWriter(path, _capture!.WaveFormat);
-        _tapSourceFormat = _capture.WaveFormat;
+        // Fresh tap state per session: warm-pool recorders are RECYCLED, and
+        // a reused carry would bleed the previous session's final samples
+        // into this session's first streamed chunk.
+        _tapCarry = Array.Empty<byte>();
         _capture.DataAvailable += OnDataAvailable;
         _capture.StartRecording();
     }
@@ -205,60 +226,58 @@ public sealed class WavRecorder : IDisposable
         }
     }
 
-    /// <summary>Convert this buffer to PCM16 mono 16 kHz and emit it. Any tap
-    /// failure just drops that buffer — the file and the file-endpoint fallback
-    /// are untouched, so the live path is strictly best-effort.</summary>
+    /// <summary>Emit this buffer as PCM16 MONO at the NATIVE capture rate —
+    /// exactly what the server's own web client streams (StereoPanner→mono,
+    /// Math.round(x*32767), no resampling). Downmix (L+R)/2; carry torn
+    /// frames. The declared session rate matches, so the server resamples
+    /// internally. Any tap failure drops that buffer only — the durable
+    /// file is untouched.</summary>
     private void PushLiveTap(byte[] buffer, int bytes, WaveFormat source)
     {
         try
         {
             if (PcmChunk is null || bytes <= 0) return;
-            if (_tapSourceFormat is null || !_tapSourceFormat.Equals(source))
-            {
-                _tapSourceFormat = source;
-                _tapCarry = Array.Empty<byte>();
-            }
 
-            // Prior partial-sample carry + this buffer, so the converter never
-            // sees a torn sample frame at a buffer boundary.
+            // Prior partial-frame carry + this buffer: the downmix never sees
+            // a torn sample frame at a buffer boundary.
+            var frameSize = source.Channels * (source.BitsPerSample / 8);
             var input = _tapCarry.Length == 0 ? buffer
                 : _tapCarry.Concat(buffer.Take(bytes)).ToArray();
-
-            var frameSize = source.Channels * (source.BitsPerSample / 8);
             var whole = input.Length - (input.Length % frameSize);
             _tapCarry = input.Skip(whole).ToArray();
 
-            var outChunk = ResampleToPcm16Mono16k(input, whole, source);
-            if (outChunk.Length > 0) PcmChunk.Invoke(outChunk);
+            var frames = whole / frameSize;
+            if (frames <= 0) return;
+            var mono = new byte[frames * 2];
+            var channels = source.Channels;
+            // WASAPI shared mode delivers IEEE float32 (−1…1); int16 sources
+            // are normalized to the same range first — then BOTH convert to
+            // PCM16 exactly as the server's web client does:
+            // round(x * 32767), clamped.
+            var isFloat = source.BitsPerSample == 32
+                && source.Encoding == WaveFormatEncoding.IeeeFloat;
+            var sampleBytes = source.BitsPerSample / 8;
+            for (var f = 0; f < frames; f++)
+            {
+                double acc = 0;
+                for (var c = 0; c < channels; c++)
+                {
+                    var idx = f * frameSize + c * sampleBytes;
+                    acc += isFloat
+                        ? BitConverter.ToSingle(input, idx)
+                        : BitConverter.ToInt16(input, idx) / 32768.0;
+                }
+                var v = (int)Math.Clamp(
+                    (int)Math.Round(acc / channels * 32767.0),
+                    short.MinValue, short.MaxValue);
+                Buffer.BlockCopy(new[] { (short)v }, 0, mono, f * 2, 2);
+            }
+            PcmChunk.Invoke(mono);
         }
         catch
         {
             // Live path is best-effort only.
         }
-    }
-
-    private static byte[] ResampleToPcm16Mono16k(byte[] input, int count, WaveFormat source)
-    {
-        // Per-call resampler (thread-safe, stateless). Quality 60 — the same
-        // setting as the file transcode, so the streaming copy and the durable
-        // file are conversions of equal fidelity. CPU cost of 60 vs 40 measured
-        // ~0.1ms per 100ms chunk (see scripts/resampler_bench.py) — negligible
-        // at this chunk size.
-        var stream = new MemoryStream(input, 0, count, writable: false);
-        using var src = new RawSourceWaveStream(stream, source);
-        using var r = new MediaFoundationResampler(src, new WaveFormat(16000, 16, 1))
-        {
-            ResamplerQuality = 60,
-        };
-        using var ms = new MemoryStream();
-        var outBuf = new byte[64 * 1024];
-        while (true)
-        {
-            var read = r.Read(outBuf, 0, outBuf.Length);
-            if (read <= 0) break;
-            ms.Write(outBuf, 0, read);
-        }
-        return ms.ToArray();
     }
 
     /// <summary>Stop capture, flush the raw file, then transcode to the 16 kHz
@@ -302,6 +321,13 @@ public sealed class WavRecorder : IDisposable
             {
                 WaveFileWriter.CreateWaveFile(finalPath, resampler);
             }
+            // Debug aid (ATHENA_DUMP_TAP=1): keep the raw stereo capture next
+            // to the transcode so the live tap's downmix can be diffed against
+            // the mic's ground truth when words go missing.
+            if (Environment.GetEnvironmentVariable("ATHENA_DUMP_TAP") == "1")
+                File.Copy(rawPath,
+                    Path.Combine(Path.GetDirectoryName(rawPath)!, "capture-debug.wav"),
+                    overwrite: true);
             File.Delete(rawPath);
             return finalPath;
         }
