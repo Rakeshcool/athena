@@ -12,6 +12,9 @@
     <AssemblyName>Athena</AssemblyName>
     <ApplicationIcon>Assets\Athena.ico</ApplicationIcon>
     <RootNamespace>Athena.App</RootNamespace>
+    <Version>0.1.0</Version>
+    <AssemblyTitle>Athena</AssemblyTitle>
+    <Product>Athena</Product>
   </PropertyGroup>
 
   <ItemGroup>

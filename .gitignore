@@ -26,3 +26,5 @@ obj/
 .freebuff/
 mac_stuff/
 THIRD_PARTY_NOTICES.md
+dist/
+installer/

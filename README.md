@@ -65,6 +65,22 @@ Or in one step during development:
 dotnet run --project src/Athena.App
 ```
 
+## Install
+
+A per-user installer (no admin rights) is built with Inno Setup:
+
+```powershell
+pwsh installer\build.ps1        # publish + compile -> dist\AthenaSetup-<version>.exe
+```
+
+Requires the [Inno Setup 6](https://jrsoftware.org/isinfo.php) compiler
+(`winget install JRSoftware.InnoSetup`). The script publishes a self-contained
+win-x64 build (no .NET runtime needed on the target machine) and compiles
+`dist\AthenaSetup-<version>.exe`, which installs to
+`%LocalAppData%\Programs\Athena`, adds a Start Menu group with an uninstaller,
+and offers desktop / start-at-login shortcuts. User data (history DB, session
+audio, logs, `settings.json`) survives uninstall and upgrades.
+
 Run the tests (146 tests: pure-logic suites plus live integration tests that
 auto-skip when the local servers are down):
 
