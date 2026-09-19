@@ -52,9 +52,9 @@
              min/max/close are TitleBar's job (WM_NCHITTEST preserved). -->
         <ui:TitleBar Grid.Row="0" Title="Athena" Padding="12,6,0,0" Height="40">
             <ui:TitleBar.Header>
-                <StackPanel Orientation="Horizontal" Margin="4,0,0,0" VerticalAlignment="Center">
+                <StackPanel x:Name="StatusArea" Orientation="Horizontal" Margin="4,0,0,0" VerticalAlignment="Center">
                     <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#4C9E63"/>
-                    <TextBlock x:Name="StatusText" Text="ready" Margin="6,0,0,0"
+                    <TextBlock x:Name="StatusText" Text="checking servers…" Margin="6,0,0,0"
                                FontSize="12" Opacity="0.75" VerticalAlignment="Center"/>
                 </StackPanel>
             </ui:TitleBar.Header>

@@ -157,6 +157,11 @@ kept, audio dropped) after the retention window you set.
   per-row Copy/Retry/Delete. Retention prunes aged audio, never transcripts.
 - **Earcons** — the Athena start/stop/success/error/lock sounds, synthesized at
   startup (no sound files shipped).
+- **Honest server status** — the title-bar dot isn't cosmetic: every 5s both
+  local servers' `/health` endpoints are probed, and while idle the dot is
+  green only when they actually answer. A server going down turns the dot red
+  with a message naming the server and the consequence ("ASR server down —
+  speech won't transcribe"), before you waste a dictation finding out.
 - **Fluent settings** — server URLs with live connection test, language picker,
   plain-language toggles for every behavior, rebindable dictation key, warm
   accent theme, launch-at-login.
@@ -239,7 +244,7 @@ mac_stuff/               the original macOS app (Swift), untracked — reference
 |---|---|
 | Nothing pastes, text only in History | `%APPDATA%\Athena\logs\athena.log` — every transition is logged; if the last line is `Inserting` and the app died, it's the elevated-window guard (text is in the clipboard instead) |
 | Key press does nothing | Is Athena in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does the key still type its own character — meaning another app owns a lower-level hook? |
-| Live words never appear | Is **Show words while I'm speaking** on (Settings → General)? Is the ASR server up (`curl http://127.0.0.1:8080/health`)? The log shows `realtime connect failed` when the endpoint is missing — dictation still works, just without the live preview |
+| Live words never appear | Is **Show words while I'm speaking** on (Settings → General)? Is the ASR server up? The title-bar dot answers that at a glance (red = a server is down); the log shows `realtime connect failed` when the endpoint is missing — dictation still works, just without the live preview |
 | Inserted text has wrong/cut words | The file decode owns the final by default; if you enabled **Use the stream for the final text**, try turning it off (the stream trades some accuracy for latency) |
 | Transcription fails | Server up? `curl http://127.0.0.1:8080/health` and `curl http://127.0.0.1:3000/health` |
 | App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Athena.exe` first (file locks) |

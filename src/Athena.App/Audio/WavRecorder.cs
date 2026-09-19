@@ -51,10 +51,10 @@ public sealed class WavRecorder : IDisposable
     /// capture loop (events alone would need a closure to poll).</summary>
     public volatile float CurrentLevel;
 
-    /// <summary>The capture graph's actual format. The realtime stream declares
-    /// THIS rate (the web client's contract: "sample_rate: context.sampleRate")
-    /// — read it only after Start().</summary>
-    public WaveFormat? CaptureFormat => _capture?.WaveFormat;
+    /// <summary>The capture graph's actual format — internal to the recorder
+    /// (the tap downmix and the file writer read it; the stream declares
+    /// NativeSampleRate, available before Start via the warm graph).</summary>
+    private WaveFormat? CaptureFormat => _capture?.WaveFormat;
 
     /// <summary>The capture graph's native sample rate, available BEFORE
     /// Start() once Warm() has built the graph (the warm pool guarantees
@@ -239,12 +239,35 @@ public sealed class WavRecorder : IDisposable
             if (PcmChunk is null || bytes <= 0) return;
 
             // Prior partial-frame carry + this buffer: the downmix never sees
-            // a torn sample frame at a buffer boundary.
+            // a torn sample frame at a buffer boundary. HOT PATH (~every 10ms):
+            // zero LINQ — the old Concat/Skip/ToArray chain allocated 4+ arrays
+            // per buffer on the audio thread. This allocates ONE joined buffer
+            // only when a carry exists (the common aligned case reads `buffer`
+            // directly) and keeps the carry in a right-sized array.
             var frameSize = source.Channels * (source.BitsPerSample / 8);
-            var input = _tapCarry.Length == 0 ? buffer
-                : _tapCarry.Concat(buffer.Take(bytes)).ToArray();
-            var whole = input.Length - (input.Length % frameSize);
-            _tapCarry = input.Skip(whole).ToArray();
+            var total = _tapCarry.Length + bytes;
+            var whole = total - (total % frameSize);
+            var carryLen = total - whole;
+
+            byte[] input;
+            if (_tapCarry.Length == 0)
+            {
+                input = buffer; // aligned: no copy at all
+            }
+            else
+            {
+                input = new byte[total];
+                Buffer.BlockCopy(_tapCarry, 0, input, 0, _tapCarry.Length);
+                Buffer.BlockCopy(buffer, 0, input, _tapCarry.Length, bytes);
+            }
+
+            // Stash the tail (whole..total) as the next carry.
+            if (carryLen > 0)
+            {
+                if (_tapCarry.Length != carryLen) _tapCarry = new byte[carryLen];
+                Buffer.BlockCopy(input, whole, _tapCarry, 0, carryLen);
+            }
+            else _tapCarry = Array.Empty<byte>();
 
             var frames = whole / frameSize;
             if (frames <= 0) return;

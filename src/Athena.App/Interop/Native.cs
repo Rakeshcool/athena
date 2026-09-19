@@ -8,22 +8,6 @@ namespace Athena.App.Interop;
 
 internal static class Native
 {
-    // RegisterHotKey / WM_HOTKEY — the PTT hotkey. A fixed system-wide hotkey is
-    // v1; the full CGEventTap equivalent (low-level hook on a dedicated thread)
-    // arrives with the hold/lock grammar wiring.
-    public const int WM_HOTKEY = 0x0312;
-    public const uint MOD_ALT = 0x0001;
-    public const uint MOD_CONTROL = 0x0002;
-    public const uint MOD_SHIFT = 0x0004;
-    public const uint MOD_NOREPEAT = 0x4000;
-    public const int HOTKEY_ID = 0xB00B;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
     // Foreground process — the tone map needs the target app.
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();

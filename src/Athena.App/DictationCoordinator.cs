@@ -361,18 +361,16 @@ public sealed class DictationCoordinator : IDisposable
                     }
                     else
                     {
-                        // Display-only stream. Kill the socket's audio supply
-                        // immediately, but DRAIN the decode lag before disposing:
-                        // the server keeps decoding what it already holds and
+                        // Display-only stream. DRAIN the decode lag: the
+                        // server keeps decoding what it already holds and
                         // emits deltas/completed with a lag — a short dictation
                         // released before the FIRST delta landed would otherwise
                         // show no live text at all (pill jumped straight to
-                        // "done"). No commit marker: the drain only collects
-                        // what the lag was already about to deliver. The
-                        // pipeline runs IN PARALLEL — the drain never delays
-                        // the paste.
-                        await flight.Stream.CancelAsync();
-                        var drain = flight.Stream.DrainAsync();
+                        // "done"). DrainDisplayAsync stops the audio supply,
+                        // keeps the socket open while events land (quiet 450ms,
+                        // cap 3s), then cancels+closes. The pipeline runs IN
+                        // PARALLEL — the drain never delays the paste.
+                        var drain = flight.Stream.DrainDisplayAsync();
                         var pipeline = RunPipelineAsync(flight, wavPath, streamed);
                         await Task.WhenAll(drain, pipeline);
                         await flight.Stream.DisposeAsync();

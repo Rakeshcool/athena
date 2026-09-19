@@ -48,7 +48,7 @@ public class RealtimeTranscriptTests
         t.AbsorbDelta("trailing words");
         t.SealPartial();
         Assert.Equal("First. trailing words", t.Render);
-        Assert.Equal(2, t.Finals.Count);
+        Assert.True(t.HasText);
     }
 
     [Fact]

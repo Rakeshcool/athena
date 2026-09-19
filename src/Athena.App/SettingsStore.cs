@@ -49,9 +49,6 @@ public sealed class AthenaSettings
     [JsonIgnore]
     public bool NeedsSplitTogglesMigration => !MigratedSplitToggles;
 
-    public const uint MOD_CONTROL = 0x0002;
-    public const uint MOD_WIN = 0x0008;
-
     /// <summary>Push-to-talk hotkey: a LONE key (default backtick, VK_OEM_3).
     /// Bare ` (and Shift+`) is Athena's; ` with Ctrl/Alt/Win passes through so app
     /// shortcuts keep working. The modifiers field is retained for future chord
@@ -73,9 +70,6 @@ public sealed class AthenaSettings
     /// the default neutral white highlight. Applies live; persisted like every
     /// other setting.</summary>
     public bool WarmAccent { get; set; }
-
-    [JsonIgnore]
-    public string HotkeyDisplay => "`";
 }
 
 public static class SettingsStore

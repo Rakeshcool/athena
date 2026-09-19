@@ -56,11 +56,6 @@ public sealed class RealtimeTranscript
 
     public bool HasText => Render.Trim().Length > 0;
 
-    public IReadOnlyList<string> Finals
-    {
-        get { lock (_gate) return _finals.ToArray(); }
-    }
-
     public void AbsorbDelta(string? delta)
     {
         if (string.IsNullOrEmpty(delta)) return;
@@ -498,8 +493,21 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
     /// Waits until no new text event has landed for QuietMs, the socket dies,
     /// or capMs elapses. Cancel/Dispose stay safe mid-drain (listeners were
     /// detached first; SendAudio no-ops once _dead flips).</summary>
-    public async Task DrainAsync(int quietMs = 450, int capMs = 3000)
+    /// <summary>Drain the server's DECODE LAG at key-up (display-only mode).
+    /// The previous version called CancelAsync first — which sets _dead and
+    /// CLOSES the socket — so this loop's `IsOpen && !_dead` guard exited on
+    /// its first check and nothing was ever drained. The correct order: stop
+    /// the audio supply, keep the socket OPEN and the receive loop RUNNING
+    /// while the lagging deltas/completed land, and only then cancel+close.
+    /// Waits until no text event for quietMs, the socket dies, or capMs.
+    /// (Sending no commit marker: the drain collects only what the server
+    /// was already emitting; input_audio_buffer.clear at the end discards
+    /// whatever was still buffered undecoded.)</summary>
+    public async Task DrainDisplayAsync(int quietMs = 450, int capMs = 3000)
     {
+        // Stop the sender (audio supply ended with the capture); the socket
+        // and receive loop stay alive so in-flight text events still land.
+        _outgoing.Writer.TryComplete();
         var start = Environment.TickCount64;
         while (Environment.TickCount64 - start < capMs
                && Environment.TickCount64 - Interlocked.Read(ref _lastTextEventTicks) < quietMs
@@ -507,6 +515,7 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
         {
             await Task.Delay(60).ConfigureAwait(false);
         }
+        await CancelAsync().ConfigureAwait(false); // discard undecoded buffer, close
     }
 
     /// <summary>Stop sending audio (capture already stopped), commit, and drain

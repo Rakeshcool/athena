@@ -54,22 +54,95 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE5, 0x39, 0x35));
     private static readonly System.Windows.Media.Brush WorkingBrush =
         new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x8A, 0x8A, 0x8A));
+    // Server-down: the semantic red, static (no pulse — a pulse means RECORDING,
+    // and the two states never coexist: down is only rendered while idle).
+    private static readonly System.Windows.Media.Brush ServersDownBrush =
+        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE5, 0x39, 0x35));
     private System.Windows.Media.Animation.Storyboard? _pulseStoryboard;
 
+    // ---- Server liveness: the idle dot/text reflect REAL reachability. The
+    // green dot used to be pure state-machine cosmetics — it showed green with
+    // both local servers down, and "ready" lied.
+    private enum ServerHealth { Unknown, Up, Down }
+    private ServerHealth _asrHealth = ServerHealth.Unknown;
+    private ServerHealth _llmHealth = ServerHealth.Unknown;
+    private LocalAsrClient? _asrHealthProbe;
+    private LocalLlmClient? _llmHealthProbe;
+    private DispatcherTimer? _healthTimer;
+
     /// <summary>The pill dot: semantic red pulse while recording (the only
-    /// accent color in the UI), muted gray while working, green when ready.</summary>
+    /// accent color in the UI), muted gray while working, and while idle —
+    /// GREEN only when the local servers actually answer /health, red when
+    /// they don't. Liveness is probed, not assumed.</summary>
     private void SetPillDot(bool recording = false, bool working = false)
     {
         if (recording)
         {
             PillDot.Fill = RecordingBrush;
             StartPulse();
+            return;
         }
-        else
+        StopPulse();
+        if (working)
         {
-            StopPulse();
-            PillDot.Fill = working ? WorkingBrush : ReadyBrush;
+            PillDot.Fill = WorkingBrush;
+            return;
         }
+        RenderIdleStatus();
+    }
+
+    /// <summary>Idle rendering: server-aware green/red + honest text. Busy
+    /// states (recording/working) keep their own visuals; this only runs idle.</summary>
+    private void RenderIdleStatus()
+    {
+        StopPulse();
+        StatusText.Text = ServersIdleText();
+        PillDot.Fill = ServersDown()
+            ? ServersDownBrush
+            : ReadyBrush; // unknown still reads neutral-green until probed
+    }
+
+    private bool ServersDown() =>
+        _asrHealth == ServerHealth.Down || _llmHealth == ServerHealth.Down;
+
+    private string ServersIdleText()
+    {
+        if (_asrHealth == ServerHealth.Down && _llmHealth == ServerHealth.Down)
+            return "servers down — dictation queued until they return";
+        if (_asrHealth == ServerHealth.Down)
+            return "ASR server down — speech won't transcribe";
+        if (_llmHealth == ServerHealth.Down)
+            return "LLM server down — text will be raw";
+        if (_asrHealth == ServerHealth.Unknown || _llmHealth == ServerHealth.Unknown)
+            return "checking servers…";
+        return $"ready — hold {Interop.HotkeyName.For((ushort)_settings!.HotkeyVk)} to dictate";
+    }
+
+    /// <summary>Ping both /health endpoints (5s cadence, 2s timeout each) and
+    /// refresh the idle status. Never overlaps itself; failure is a normal
+    /// state here, not an error.</summary>
+    private async Task CheckServersAsync()
+    {
+        if (_asrHealthProbe is null || _llmHealthProbe is null) return;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var asrTask = _asrHealthProbe.IsHealthyAsync(cts.Token);
+        var llmTask = _llmHealthProbe.IsHealthyAsync(cts.Token);
+        try
+        {
+            await Task.WhenAll(asrTask, llmTask).ConfigureAwait(true);
+            _asrHealth = asrTask.Result ? ServerHealth.Up : ServerHealth.Down;
+            _llmHealth = llmTask.Result ? ServerHealth.Up : ServerHealth.Down;
+        }
+        catch
+        {
+            _asrHealth = asrTask.Status == TaskStatus.RanToCompletion && asrTask.Result
+                ? ServerHealth.Up : ServerHealth.Down;
+            _llmHealth = llmTask.Status == TaskStatus.RanToCompletion && llmTask.Result
+                ? ServerHealth.Up : ServerHealth.Down;
+        }
+        // Only the IDLE look reflects health; recording/working visuals win.
+        if (_coordinator is null || _coordinator.State == DictationState.Idle)
+            Dispatcher.BeginInvoke(RenderIdleStatus);
     }
 
     private void StartPulse()
@@ -137,7 +210,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_coordinator is not null)
         {
-            StatusText.Text = _coordinator.State.ToString();
+            RenderIdleStatus();
             RefreshHistory();
             return;
         }
@@ -161,6 +234,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             languageProvider: () => _settings.Language);
         var llm = new LocalLlmClient(http, _settings.LlmBaseUrl, _settings.LlmModel);
         var pipeline = new FormattingPipeline(_dictionary, llm);
+
+        // Health monitor: ping both /health endpoints every 5s (2s probe
+        // timeout) so the status dot means what it says. First probe fires
+        // immediately — "ready" must never render before the servers answered.
+        _asrHealthProbe = asr;
+        _llmHealthProbe = llm;
+        _healthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _healthTimer.Tick += async (_, _) => await CheckServersAsync();
+        _healthTimer.Start();
+        _ = CheckServersAsync();
 
         _earcons = new EarconPlayer { Enabled = _settings.SoundsEnabled };
         _hud = new HudPillWindow();
@@ -303,9 +386,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 SetPillDot(working: true);
                 break;
             default:
-                StatusText.Text = "ready";
                 HintText.Text = _defaultHint;
-                SetPillDot(recording: false);
+                SetPillDot(recording: false); // text comes from RenderIdleStatus
                 break;
         }
         if (_tray is not null) _tray.Text = s == DictationState.Idle ? "Athena" : $"Athena — {s}";
