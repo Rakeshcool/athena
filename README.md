@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="logo.png" width="96" alt="Athena">
+
 # Athena for Windows
 
 **Hold a key. Speak. It types — and it never leaves your machine.**
@@ -8,7 +10,7 @@ Local dictation for Windows: [Nemotron 3.5 ASR](https://huggingface.co/nvidia/ne
 for speech-to-text and a llama.cpp-served LLM for cleanup. No cloud, no API key,
 no account. Your voice never touches the network.
 
-<sub>A Windows port of <a href="docs/MACOS_README.md">Jot for macOS</a> (Gemini edition) · Apache 2.0</sub>
+<sub>A Windows port of <a href="mac_stuff/docs/MACOS_README.md">Jot for macOS</a> (Gemini edition) · Apache 2.0</sub>
 
 </div>
 
@@ -18,19 +20,21 @@ no account. Your voice never touches the network.
 
 Hold `` ` ``, say the thing, let go. A moment later your words are in the app you
 were already using — punctuated, filler words removed, self-corrections applied.
-While you speak, your words appear **live** in a small pill at the bottom of the
-screen, streamed from the ASR model in real time.
+While you speak, your words appear **live** inside a small pill at the bottom of
+the screen, streamed from the ASR model in real time.
 
 ```
 hold ` ─▶ mic capture (WAV on disk from the first millisecond)
-        └─▶ live PCM16 stream ─▶ Nemotron ASR ─▶ partials in the HUD, live
-key up ─▶ commit ─▶ final transcript ─▶ LLM cleanup ─▶ validation gate
+        └─▶ live PCM16 stream ─▶ Nemotron ASR ─▶ partial words in the pill, live
+key up ─▶ full decode of the recording ─▶ LLM cleanup ─▶ validation gate
         ─▶ your words pasted at the cursor
 ```
 
 It follows a change of mind: say *"let's meet at 1pm — actually, no, make it
-2pm"* and Athena writes **"Let's meet at 2pm."** That is the whole pitch, and you
-can watch it happen live in the HUD while you're still talking.
+2pm"* and Athena writes **"Let's meet at 2pm."** When cleanup removes words, the
+pill shows you the edit — your raw wording, the cuts struck through in red, then
+the sentence closing up as the fixed text — so the correction is never a silent
+teleport.
 
 ## Requirements
 
@@ -61,7 +65,7 @@ Or in one step during development:
 dotnet run --project src/Athena.App
 ```
 
-Run the tests (109 unit tests + 5 live integration tests; live tests
+Run the tests (146 tests: pure-logic suites plus live integration tests that
 auto-skip when the local servers are down):
 
 ```powershell
@@ -72,13 +76,14 @@ dotnet test Athena.sln
 
 | Gesture | What happens |
 | --- | --- |
-| **Hold `` ` ``** | Records while held — live text streams into the HUD. Release and the text lands at your cursor. |
-| **`` ` `` + tap `Space`** | Hands-free: keeps recording after you let go. Tap `` ` `` to finish. |
+| **Hold the dictation key** | Records while held — live text streams into the pill. Release and the text lands at your cursor. |
+| **Key + tap `Space`** | Hands-free: keeps recording after you let go. Tap the key to finish. |
 | **`Esc`** | Cancels; buffered audio is discarded server-side. |
-| **Ctrl/Alt/Win + `` ` ``** | Passes through to apps untouched — only the bare key belongs to Athena. |
+| **Ctrl/Alt/Win + key** | Passes through to apps untouched — only the bare key belongs to Athena. |
 
-The key is rebindable to any virtual key code in
-`%APPDATA%\Athena\settings.json` (`HotkeyVk`, e.g. `0xC0` = backtick).
+The key is any lone key of your choice — rebind it in **Settings → General →
+Dictation key** (persisted as `HotkeyVk` in `settings.json`, e.g. `0xC0` =
+backtick).
 
 ## The pipeline
 
@@ -88,16 +93,24 @@ without losing words:
 1. **Crash-safe capture** — WAV hits disk from t=0, fsynced. A crash, `taskkill /f`,
    or a dead battery costs nothing: on next launch, unfinished sessions are
    marked `Recovered` and their audio is intact (torn headers are repaired).
-   The capture graph is also **prebuilt while idle** (a warm pool, like the
-   macOS original), so key-down pays only `StartRecording()` — the 100-odd ms
-   of device activation is exactly where first words used to be lost.
-2. **Live streaming ASR** — PCM16 mono 16 kHz streams over the server's
-   realtime WebSocket (`/v1/audio/transcriptions/realtime`). Partial words
-   render in the HUD as you speak. On key-up the server commits and the
-   **streamed transcript is used directly** — no second transcription pass.
-3. **The always-on fallback** — if the stream dies mid-word, the file endpoint
-   (`POST /v1/audio/transcriptions`) transcribes the on-disk WAV instead. The
-   stream is an optimization; the file is the record.
+   The capture graph is also **prebuilt while idle** (a warm pool), so key-down
+   pays only `StartRecording()` — the 100-odd ms of device activation is
+   exactly where first words used to be lost.
+2. **Live streaming ASR** — the mic's native-rate PCM streams over the server's
+   realtime WebSocket (`/v1/audio/transcriptions/realtime`, deltas framed at
+   100 ms, wire order = capture order via a single FIFO sender). Partial words
+   render in the pill as you speak, with the server's own spacing preserved.
+   The stream is **display-first**: it shows you your words while the recording
+   is still being made.
+3. **The whole-utterance decode** — at key-up, the on-disk WAV goes to the file
+   endpoint (`POST /v1/audio/transcriptions`) and *that* transcript is what
+   gets inserted. In local testing the file decode of a session was always
+   complete while realtime streams occasionally dropped words, so the file is
+   the record and the stream is the preview. (You can flip this: **Use the
+   stream for the final text** in Settings trades the safety for lower latency,
+   and **Double-check the first word** then corrects the stream's zero-left-
+   context first word against the recording.) If the stream dies mid-word,
+   nothing changes — the file decode was always the plan.
 4. **LLM cleanup** — the raw transcript (already punctuated by the ASR model)
    goes to the local LLM with a steering prompt: filler removal, self-correction
    collapsing, per-app tone (Email / Work chat / Personal chat / Code / Neutral).
@@ -123,8 +136,11 @@ kept, audio dropped) after the retention window you set.
 
 ## Features
 
-- **Live HUD pill** — waveform while recording, your words streaming in a
-  bubble above it, green/red terminal states; never steals focus, click-through.
+- **The three-beat HUD pill** — while speaking, the pill itself shows
+  `ATHENA WRITES` with your words appearing live; if cleanup finds cuts, it
+  flips to `YOU SAID` with your raw wording, the cuts strike through in red and
+  collapse, settling on the fixed sentence that gets pasted. Never steals
+  focus, click-through, scrollable for long dictations.
 - **19 languages + auto-detect** — all of Nemotron 3.5's transcription-ready
   locales (English US/UK, Spanish ×2, French ×2, Italian, Portuguese ×2, Dutch,
   German, Turkish, Russian, Arabic, Hindi, Japanese, Korean, Vietnamese,
@@ -141,8 +157,11 @@ kept, audio dropped) after the retention window you set.
   per-row Copy/Retry/Delete. Retention prunes aged audio, never transcripts.
 - **Earcons** — the Athena start/stop/success/error/lock sounds, synthesized at
   startup (no sound files shipped).
-- **Settings** — server URLs with live connection test, language picker,
-  cleanup/sounds toggles, retention, launch-at-login (Startup-folder shortcut).
+- **Fluent settings** — server URLs with live connection test, language picker,
+  plain-language toggles for every behavior, rebindable dictation key, warm
+  accent theme, launch-at-login.
+- **Your logo everywhere** — the app icon (exe, tray, title bars) is generated
+  from `logo.png` (`scripts/make_icon.py`).
 
 ## Configuration
 
@@ -156,16 +175,24 @@ Everything lives in `%APPDATA%\Athena\`:
 | `sessions\` | per-session audio (pruned by retention) |
 | `logs\athena.log` | the diagnostic trail — every state transition lands here |
 
-Handy `settings.json` keys:
+Handy `settings.json` keys (everything here is also a Settings → General
+toggle):
 
 ```jsonc
 {
   "AsrBaseUrl": "http://127.0.0.1:8080",
   "LlmBaseUrl": "http://127.0.0.1:3000",
-  "Language": "en-US",          // or "auto", "de-DE", "hi-IN", ...
-  "StreamingEnabled": true,      // false = batch mode (file endpoint only)
+  "LlmModel": null,              // blank = server default
+  "Language": "en-US",           // or "auto", "de-DE", "hi-IN", ...
+  "StreamingEnabled": true,      // live partial words in the pill
+  "FileFallbackEnabled": false,  // true = insert the stream's final (lower latency)
+  "CrossCheckAsr": true,         // fix the stream's first word vs the recording
   "CleanupEnabled": true,        // false = raw ASR output, no LLM
-  "HotkeyVk": 192                // 0xC0 = backtick
+  "SoundsEnabled": true,         // earcons
+  "WarmAccent": false,           // true = warm salmon accent theme
+  "HotkeyVk": 192,               // 0xC0 = backtick
+  "RetentionDays": 7,            // audio pruning (0 = keep forever)
+  "HistoryLimit": 200
 }
 ```
 
@@ -179,27 +206,31 @@ src/
     HotkeyProcessor.cs         hold/tap/lock/cancel grammar (pure)
     ValidationGate.cs          the never-insert-garbage gate (pure)
     ReplacementEngine.cs       deterministic wrong→right rules (pure)
+    TranscriptDiff.cs          the you-said → fixed alignment (pure)
+    TranscriptSourcePolicy.cs  stream vs file decision matrix (pure)
+    TrailingCapturePolicy.cs   keep listening past key-up (pure)
     PromptV1.cs                the cleanup steering prompt
     LanguageCatalog.cs         19 locales + auto-detect + tag stripping
     HistoryStore.cs            SQLite + FTS5 session history
     RetryQueue.cs              offline queue + backoff policy
     Clients/
       RealtimeAsrClient.cs     live WebSocket streaming (partials/finals)
-      LocalAsrClient.cs        file endpoint (fallback + retry path)
+      LocalAsrClient.cs        file endpoint (the record + retry path)
       LocalLlmClient.cs        OpenAI-compatible cleanup client (reasoning-aware)
   Athena.App/             the Windows shell
     DictationCoordinator.cs    orchestrates a dictation flight end-to-end
     Audio/WavRecorder.cs       WASAPI capture + live PCM16 tap + transcode
+    Audio/WarmRecorderPool.cs  prewarmed capture graphs (key-down pays ~0)
     Interop/KeyboardHook.cs    WH_KEYBOARD_LL push-to-talk hook
     Interop/SendInputInserter.cs  the Ctrl+V insertion ladder
-    Hud/HudPillWindow.cs       the non-activating HUD pill + live bubble
+    Hud/HudPillWindow.cs       the non-activating pill: live text + edit reveal
     Sound/EarconPlayer.cs      synthesized earcons
     Windows/                   tray, main, Settings, History windows
-tests/Athena.Core.Tests/  109 tests: pure-logic suites + 5 live integration tests
-scripts/               dev probes (python, uv-run)
+tests/                    146 tests: pure-logic suites + live integration tests
+scripts/                  dev probes + icon generator (python, uv-run)
 docs/
-  WINDOWS_PORT.md      port notes: what was mapped, what was trimmed
-mac_stuff/             the original macOS app (Swift), untracked — not part of the Windows build
+  WINDOWS_PORT.md        port notes: what was mapped, what was trimmed
+mac_stuff/               the original macOS app (Swift), untracked — reference only
 ```
 
 ## Troubleshooting
@@ -207,20 +238,21 @@ mac_stuff/             the original macOS app (Swift), untracked — not part of
 | Symptom | First look |
 |---|---|
 | Nothing pastes, text only in History | `%APPDATA%\Athena\logs\athena.log` — every transition is logged; if the last line is `Inserting` and the app died, it's the elevated-window guard (text is in the clipboard instead) |
-| Key press does nothing | Is Athena in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does `` ` `` type a backtick — meaning another app owns a lower-level hook? |
-| Streamed text never appears | Check `StreamingEnabled` in settings; the log shows `realtime connect failed` when the server lacks the endpoint (batch mode still works) |
+| Key press does nothing | Is Athena in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does the key still type its own character — meaning another app owns a lower-level hook? |
+| Live words never appear | Is **Show words while I'm speaking** on (Settings → General)? Is the ASR server up (`curl http://127.0.0.1:8080/health`)? The log shows `realtime connect failed` when the endpoint is missing — dictation still works, just without the live preview |
+| Inserted text has wrong/cut words | The file decode owns the final by default; if you enabled **Use the stream for the final text**, try turning it off (the stream trades some accuracy for latency) |
 | Transcription fails | Server up? `curl http://127.0.0.1:8080/health` and `curl http://127.0.0.1:3000/health` |
 | App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Athena.exe` first (file locks) |
 
 ## Acknowledgements
 
-- **[Jot for macOS](mac_stuff/docs/MACOS_README.md)** by [Ammaar Reshi](https://x.com/ammaar) —
-  the original app, design corpus, and failure-mode discipline this port follows.
 - **[NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp)** and
   [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) —
   local streaming speech recognition.
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — local LLM inference.
 - **[NAudio](https://github.com/naudio/NAudio)** — WASAPI capture and resampling.
+- **[WPF UI (lepoco)](https://github.com/lepoco/wpfui)** — the Fluent window
+  chrome, title bars, and toggle switches.
 - **[Microsoft.Data.Sqlite](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/)** —
   history storage with FTS5.
 - **[xUnit](https://xunit.net/)** — the test net under all of it.
