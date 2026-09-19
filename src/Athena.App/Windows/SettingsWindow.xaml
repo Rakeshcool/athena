@@ -129,8 +129,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Polish transcripts with local LLM" FontSize="13"/>
-                        <TextBlock Text="Self-corrections, punctuation, fillers" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Clean up my speech automatically" FontSize="13"/>
+                        <TextBlock Text="Removes 'um's and stumbles, adds punctuation. 'Meet at 1… no, make it 2pm' becomes 'Meet at 2pm.'" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="CleanupToggle" VerticalAlignment="Center"/>
                 </Grid>
@@ -141,8 +141,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Play earcons" FontSize="13"/>
-                        <TextBlock Text="Start / stop / success / error" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Sound effects" FontSize="13"/>
+                        <TextBlock Text="Play a short sound when you start, stop, and when your text is ready" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="SoundsToggle" VerticalAlignment="Center"/>
                 </Grid>
@@ -153,8 +153,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Stream speech to text live" FontSize="13"/>
-                        <TextBlock Text="Partial words appear in the HUD while dictating" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Show words while I'm speaking" FontSize="13"/>
+                        <TextBlock Text="See your speech turn into text live, before the key is released" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="StreamingToggle" VerticalAlignment="Center"/>
                 </Grid>
@@ -165,8 +165,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Use the live stream for the final text" FontSize="13"/>
-                        <TextBlock Text="Off: insert the recording's full decode instead (safer; one extra transcription)" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Type text as soon as I release the key" FontSize="13"/>
+                        <TextBlock Text="On: fastest. Off (recommended): re-checks the full recording first, so fewer mistakes — takes a moment longer" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="FileFallbackToggle" VerticalAlignment="Center"/>
                 </Grid>
@@ -177,8 +177,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Cross-check the stream against the recording" FontSize="13"/>
-                        <TextBlock Text="First-word accuracy — fixes “Write” heard as “Right”; one extra local transcription" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Double-check the first word" FontSize="13"/>
+                        <TextBlock Text="The first word is the easiest to mishear ('write' heard as 'right'). Works only with the option above turned on" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="CrossCheckToggle" VerticalAlignment="Center"/>
                 </Grid>
@@ -186,7 +186,7 @@
                 <TextBlock Style="{StaticResource SectionLabel}" Text="Speech language"/>
                 <ComboBox x:Name="LanguageBox" Margin="0,6,0,0"/>
 
-                <TextBlock Style="{StaticResource SectionLabel}" Text="Push-to-talk key"/>
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Dictation key"/>
                 <Grid Margin="0,6,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -198,7 +198,7 @@
                                Click="OnRebindClick" Padding="12,5" Margin="8,0,0,0"/>
                 </Grid>
                 <TextBlock Style="{StaticResource HelpText}"
-                           Text="A lone key — hold to talk, tap Space to lock hands-free. Esc cancels a capture. Ctrl/Alt/Win chords keep passing through to apps."/>
+                           Text="Hold the key while you speak, release to type. Tap Space to keep talking without holding it. Press Esc to throw away a take."/>
 
                 <TextBlock Style="{StaticResource SectionLabel}" Text="Launch"/>
                 <Grid Margin="0,6">
@@ -219,8 +219,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0">
-                        <TextBlock Text="Warm accent color" FontSize="13"/>
-                        <TextBlock Text="Salmon highlights and toggles instead of white" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="Warm color theme" FontSize="13"/>
+                        <TextBlock Text="Softer salmon highlights instead of white" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="WarmAccentToggle" VerticalAlignment="Center"/>
                 </Grid>
