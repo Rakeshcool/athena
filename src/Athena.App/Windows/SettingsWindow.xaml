@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Athena Settings" Width="640" Height="580"
+        Icon="/Assets/Athena.ico"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
         Background="{DynamicResource ApplicationBackgroundBrush}">
@@ -279,7 +280,12 @@
 
             <!-- About -->
             <StackPanel Grid.Row="1" x:Name="AboutPage" Visibility="Collapsed" Margin="0,4,0,0">
-                <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="Medium"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <Image Source="/Assets/Athena.ico" Width="32" Height="32"
+                           VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="Medium"
+                               VerticalAlignment="Center" Margin="10,0,0,0"/>
+                </StackPanel>
                 <TextBlock TextWrapping="Wrap" Margin="0,8" Opacity="0.7"
                            Text="Hold a key, speak, and polished text lands at your cursor — fully local. Nemotron ASR + llama.cpp cleanup, no cloud, no accounts."/>
                 <TextBlock TextWrapping="Wrap" Opacity="0.7"

@@ -10,8 +10,13 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Athena</AssemblyName>
+    <ApplicationIcon>Assets\Athena.ico</ApplicationIcon>
     <RootNamespace>Athena.App</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Athena.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="WPF-UI" Version="4.0.0" />

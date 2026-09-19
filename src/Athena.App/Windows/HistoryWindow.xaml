@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Athena History" Width="720" Height="560"
+        Icon="/Assets/Athena.ico"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
         Background="{DynamicResource ApplicationBackgroundBrush}">

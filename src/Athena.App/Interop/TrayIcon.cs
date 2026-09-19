@@ -19,6 +19,7 @@ public sealed class NotifyIconHost
 public sealed class TrayIcon : IDisposable
 {
     private readonly System.Windows.Forms.NotifyIcon _icon;
+    private readonly System.Drawing.Icon _appIcon;
 
     public string Text
     {
@@ -39,11 +40,14 @@ public sealed class TrayIcon : IDisposable
 
     public TrayIcon(NotifyIconHost host)
     {
+        // The app's own icon (multi-size ICO, embedded as a pack resource)
+        // instead of the generic SystemIcons.Application placeholder.
+        _appIcon = LoadAppIcon();
         _icon = new System.Windows.Forms.NotifyIcon
         {
             Text = "Athena",
             Visible = true,
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = _appIcon,
         };
         _icon.MouseClick += (_, e) =>
         {
@@ -58,9 +62,28 @@ public sealed class TrayIcon : IDisposable
         _icon.ContextMenuStrip = menu;
     }
 
+    /// <summary>Loads Assets/Athena.ico from the pack resources; falls back to
+    /// the generic application icon if the resource is somehow missing.</summary>
+    private static System.Drawing.Icon LoadAppIcon()
+    {
+        try
+        {
+            var sri = System.Windows.Application.GetResourceStream(
+                new Uri("pack://application:,,,/Assets/Athena.ico"));
+            if (sri is not null)
+                return new System.Drawing.Icon(sri.Stream);
+        }
+        catch
+        {
+            // Fall through to the placeholder.
+        }
+        return System.Drawing.SystemIcons.Application;
+    }
+
     public void Dispose()
     {
         _icon.Visible = false;
         _icon.Dispose();
+        _appIcon.Dispose();
     }
 }
