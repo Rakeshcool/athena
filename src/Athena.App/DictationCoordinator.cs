@@ -247,10 +247,11 @@ public sealed class DictationCoordinator : IDisposable
                 });
                 stream.PartialChanged += text =>
                 {
-                    // Superseded session OR finalized/cancelled one: the fields
-                    // are torn down (or belong to the next session) — never
-                    // paint a dying stream's text over fresh state.
-                    if (sessionId != _sessionId || _stream is null) return;
+                    // Superseded session: never paint a dying stream's text
+                    // over fresh state. (_stream null is fine during finalize —
+                    // the display drain keeps delivering late deltas, and that
+                    // late live text is exactly what the user should see.)
+                    if (sessionId != _sessionId) return;
                     LivePartial?.Invoke(text);
                 };
                 _stream = stream;
@@ -346,8 +347,7 @@ public sealed class DictationCoordinator : IDisposable
                     // Policy decides whether the stream's final is worth
                     // collecting: with file-fallback off the stream is DISPLAY
                     // only — its text will never be inserted, so don't make
-                    // the user wait for the commit round-trip; abandon like a
-                    // cancel (clear discards buffered audio server-side).
+                    // the user wait for the commit round-trip.
                     if (TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
                         == TranscriptSource.LiveStream)
                     {
@@ -361,8 +361,23 @@ public sealed class DictationCoordinator : IDisposable
                     }
                     else
                     {
+                        // Display-only stream. Kill the socket's audio supply
+                        // immediately, but DRAIN the decode lag before disposing:
+                        // the server keeps decoding what it already holds and
+                        // emits deltas/completed with a lag — a short dictation
+                        // released before the FIRST delta landed would otherwise
+                        // show no live text at all (pill jumped straight to
+                        // "done"). No commit marker: the drain only collects
+                        // what the lag was already about to deliver. The
+                        // pipeline runs IN PARALLEL — the drain never delays
+                        // the paste.
                         await flight.Stream.CancelAsync();
-                        FileLog.Write("stream display-only (file fallback owns the final) — abandoned at key-up");
+                        var drain = flight.Stream.DrainAsync();
+                        var pipeline = RunPipelineAsync(flight, wavPath, streamed);
+                        await Task.WhenAll(drain, pipeline);
+                        await flight.Stream.DisposeAsync();
+                        FileLog.Write($"display stream drained (text seen: {flight.Stream.HasEmittedText})");
+                        return;
                     }
                     await flight.Stream.DisposeAsync();
                 }

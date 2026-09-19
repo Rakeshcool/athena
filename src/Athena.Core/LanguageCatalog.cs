@@ -64,4 +64,18 @@ public static class LanguageCatalog
         var stripped = LanguageTag.Replace(text, " ");
         return Regex.Replace(stripped, "\\s+", " ").Trim();
     }
+
+    /// <summary>Tag stripping for STREAMING DELTAS: replace tags with nothing
+    /// and never touch whitespace. Deltas are fragments — a word-initial
+    /// fragment arrives as " is" with its own leading space, a mid-word
+    /// continuation as "al" — so trimming or collapsing here glues words
+    /// together in the live text ("Foodislikeoneofthe"). Whole-sentence
+    /// events (.completed) go through StripLanguageTags, where trimming is
+    /// correct. A tag split across two deltas can slip past the regex in
+    /// auto mode; explicit-language sessions (the default) never emit tags.</summary>
+    public static string StripLanguageTagsPreserveSpacing(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        return LanguageTag.Replace(text, "");
+    }
 }

@@ -198,10 +198,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // last partial must not linger as if it were current — the coordinator
         // can no longer retract it once the session is torn down (a live event
         // arriving after teardown is dropped, by design). The state change is
-        // the retraction.
+        // the retraction. DONE is exempt: the text on screen at Done IS the
+        // result (and the finalize drain may still be landing late deltas) —
+        // clearing it would blank the pill the instant the words appear.
         _coordinator.StateChanged += s => Dispatcher.BeginInvoke(() =>
         {
-            if (s is DictationState.Idle or DictationState.Done or DictationState.Failed
+            if (s is DictationState.Idle or DictationState.Failed
                 or DictationState.Cancelled)
                 _hud?.SetLiveText(null);
         });

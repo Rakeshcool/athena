@@ -146,6 +146,9 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
     private readonly TaskCompletionSource _sessionUpdated = new(TaskCreationOptions.RunContinuationsAsynchronously);
     // Server-reported decode progress (seconds × 1000; reader thread only).
     private long _audioProcessedTicks;
+    // TickCount64 of the last text event (delta fragment or completed final) —
+    // the drain loop's liveness signal, written on the reader thread only.
+    private long _lastTextEventTicks;
 
     private volatile bool _committed;
     private volatile bool _committedAck;
@@ -155,6 +158,12 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
     /// diagnosis needs it: "sent 360 KB, no events" is a server problem;
     /// "sent 0 KB" is a client pump problem. Those are different bugs.</summary>
     private long _bytesSent;
+
+    /// <summary>Track whether any text event has arrived at all. The
+    /// "straight to done" diagnosis needs it: with the server's decode lag,
+    /// a short dictation can release the key before the FIRST delta lands —
+    /// no live text ever shown, though the session was perfectly healthy.</summary>
+    public bool HasEmittedText { get; private set; }
 
     /// <summary>Rendered live text changed (finals + current partial).</summary>
     public event Action<string>? PartialChanged;
@@ -379,7 +388,16 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
             if (type.EndsWith(".delta"))
             {
                 var d = doc.RootElement.TryGetProperty("delta", out var dd) ? dd.GetString() : null;
-                _transcript.AbsorbDelta(LanguageCatalog.StripLanguageTags(d ?? ""));
+                // Spacing-preserving strip: deltas are fragments that carry
+                // their own leading spaces (" is"); trimming here glued the
+                // live words together while .completed finals stayed correct.
+                var fragment = LanguageCatalog.StripLanguageTagsPreserveSpacing(d);
+                if (fragment.Length > 0)
+                {
+                    HasEmittedText = true;
+                    Interlocked.Exchange(ref _lastTextEventTicks, Environment.TickCount64);
+                    _transcript.AbsorbDelta(fragment);
+                }
                 // The reference client reads audio_processed off the delta
                 // events: how many seconds the server has actually decoded.
                 if (doc.RootElement.TryGetProperty("audio_processed", out var ap)
@@ -391,7 +409,13 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
             {
                 var text = doc.RootElement.TryGetProperty("transcript", out var tr) ? tr.GetString()
                          : doc.RootElement.TryGetProperty("text", out var tx) ? tx.GetString() : null;
-                _transcript.AbsorbCompleted(text is null ? null : LanguageCatalog.StripLanguageTags(text));
+                var final = text is null ? null : LanguageCatalog.StripLanguageTags(text);
+                if (!string.IsNullOrWhiteSpace(final))
+                {
+                    HasEmittedText = true;
+                    Interlocked.Exchange(ref _lastTextEventTicks, Environment.TickCount64);
+                }
+                _transcript.AbsorbCompleted(final);
                 PartialChanged?.Invoke(_transcript.Render);
             }
             else if (type == "error")
@@ -464,6 +488,25 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
             }
         }
         catch { /* cancel is best-effort */ }
+    }
+
+    /// <summary>Drain the server's DECODE LAG at key-up (display-only mode).
+    /// The stream stops receiving audio, but the server keeps decoding what
+    /// it already holds and emits deltas/completed with a lag — on a short
+    /// dictation that lag exceeds the remaining speech, so killing the socket
+    /// at key-up meant the live text NEVER showed (pill jumped to "done").
+    /// Waits until no new text event has landed for QuietMs, the socket dies,
+    /// or capMs elapses. Cancel/Dispose stay safe mid-drain (listeners were
+    /// detached first; SendAudio no-ops once _dead flips).</summary>
+    public async Task DrainAsync(int quietMs = 450, int capMs = 3000)
+    {
+        var start = Environment.TickCount64;
+        while (Environment.TickCount64 - start < capMs
+               && Environment.TickCount64 - Interlocked.Read(ref _lastTextEventTicks) < quietMs
+               && IsOpen && !_dead)
+        {
+            await Task.Delay(60).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Stop sending audio (capture already stopped), commit, and drain

@@ -127,6 +127,35 @@ public class LanguageCatalogTests
         Assert.Equal(expected, LanguageCatalog.StripLanguageTags(input));
     }
 
+    [Theory]
+    [InlineData(" is", " is")]          // word-initial fragment keeps its space
+    [InlineData("mo", "mo")]            // mid-word continuation unchanged
+    [InlineData("<en-US> hello", " hello")]   // tag removed, spacing untouched
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void Delta_tag_stripping_preserves_spacing(string? input, string expected)
+    {
+        // Deltas are fragments: a leading space IS the word separator in the
+        // live text. Trimming here once glued every live word together
+        // ("Foodislikeoneofthe") while whole-sentence finals stayed correct.
+        Assert.Equal(expected, LanguageCatalog.StripLanguageTagsPreserveSpacing(input));
+    }
+
+    [Fact]
+    public void Live_partial_words_render_with_spaces()
+    {
+        // The exact shape the server emits, replayed through the accumulator:
+        // word-initial fragments carry their own leading space.
+        var t = new RealtimeTranscript();
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing("Foo"));
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing(""));
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing("d"));
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing(" is"));
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing(" like"));
+        t.AbsorbDelta(LanguageCatalog.StripLanguageTagsPreserveSpacing(" one"));
+        Assert.Equal("Food is like one", t.Render);
+    }
+
     [Fact]
     public void Language_settings_UI_order_has_auto_first()
     {
