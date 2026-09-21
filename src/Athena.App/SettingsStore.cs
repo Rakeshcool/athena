@@ -125,6 +125,11 @@ public static class SettingsStore
     public static void Save(AthenaSettings settings)
     {
         Directory.CreateDirectory(Dir);
-        File.WriteAllText(Path_, JsonSerializer.Serialize(settings, Options));
+        // Atomic write: a crash or power-cut mid-WriteAllText previously left a
+        // torn settings.json that loaded as defaults — every toggle silently
+        // reset. tmp + move is all-or-nothing.
+        var tmp = Path_ + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(settings, Options));
+        File.Move(tmp, Path_, overwrite: true);
     }
 }

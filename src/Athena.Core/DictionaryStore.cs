@@ -74,7 +74,11 @@ public sealed class DictionaryStore
         lock (_gate)
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
-            File.WriteAllText(_path, JsonSerializer.Serialize(_data, Options));
+            // Atomic write (tmp + move): a torn dictionary.json previously
+            // loaded as empty — the user's jargon silently gone.
+            var tmp = _path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(_data, Options));
+            File.Move(tmp, _path, overwrite: true);
         }
         Changed?.Invoke();
     }

@@ -91,6 +91,30 @@ public class HudLayoutTests
     }
 
     [Fact]
+    public void Stop_chip_is_visible_before_any_text_arrives()
+    {
+        // The chip used to live in the Auto-height word row: with no text yet
+        // that row measured zero and the chip vanished exactly when a hands-off
+        // take most needed it. It must be real geometry in the fixed waveform
+        // row from the first moment.
+        using var d = new StaDriver();
+        d.Invoke(() =>
+        {
+            d.Hud.ShowPill();
+            d.Hud.SetStopAffordance(true); // no SetLiveText — the pre-text case
+        });
+        d.Settle();
+
+        d.Invoke(() =>
+        {
+            var chip = (Border)GetField(d.Hud, "_stopChip");
+            Assert.Equal(Visibility.Visible, chip.Visibility);
+            Assert.True(chip.ActualHeight > 0 && chip.ActualWidth > 0,
+                $"chip collapsed: {chip.ActualWidth}x{chip.ActualHeight}");
+        });
+    }
+
+    [Fact]
     public void Pill_height_is_steady_while_bars_animate()
     {
         using var d = new StaDriver();

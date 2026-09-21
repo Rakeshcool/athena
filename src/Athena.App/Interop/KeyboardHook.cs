@@ -28,6 +28,7 @@ public sealed class KeyboardHook : IDisposable
 
     private const ushort VK_ESCAPE = 0x1B;
     private const ushort VK_SPACE = 0x20;
+    private const ushort VK_S = 0x53;
     private const ushort VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3;
     private const ushort VK_LWIN = 0x5B, VK_RWIN = 0x5C;
     private const ushort VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1;
@@ -52,7 +53,20 @@ public sealed class KeyboardHook : IDisposable
     public event Action? EscDown;
     public event Action? SpaceLock;
     public event Action<ushort>? OtherKeyDown;
+    /// <summary>Ctrl+Shift+S during a live session — the stop shortcut for
+    /// hands-off takes (hands-free lock, latched system take). Raised on the
+    /// hook thread; subscribers must marshal. Consumed ONLY while a session
+    /// is active: outside one, the chord belongs to whatever app has focus
+    /// (Edge/Chrome use it for web capture).</summary>
+    public event Action? StopShortcut;
     public event Action<string>? Log;
+
+    /// <summary>Pure classifier for the stop shortcut: Ctrl+Shift+S with no
+    /// Alt/Win (those make it other apps' chords). Static + public: a pure
+    /// function the test suite pins down (the app tests have no
+    /// InternalsVisibleTo — public is the project's test seam).</summary>
+    public static bool IsStopShortcut(ushort vk, bool ctrl, bool shift, bool alt, bool win) =>
+        vk == VK_S && ctrl && shift && !alt && !win;
 
     /// <summary>The coordinator updates this after every grammar transition; the
     /// hook uses it to decide whether Esc/Space belong to the session.</summary>
@@ -64,6 +78,7 @@ public sealed class KeyboardHook : IDisposable
     /// key event.</summary>
     public void SetHotkey(ushort vk) => _hotkeyVk = vk;
 
+    private bool _stopShortcutDown; // key-repeat guard: one fire per physical press
     private volatile bool _captureMode;
     /// <summary>While true, every non-modifier key-down is reported through
     /// CaptureKeyDown and CONSUMED — the Rebind gesture in Settings. The hook
@@ -176,10 +191,23 @@ public sealed class KeyboardHook : IDisposable
                 }
             }
 
+            if (vk == VK_S && isUp)
+                _stopShortcutDown = false; // the press is over: allow the next one
+
             if (_sessionActive && vk == VK_ESCAPE && !isUp)
             {
                 EscDown?.Invoke();
                 return 1; // consume Esc during a live session
+            }
+
+            if (_sessionActive && !isUp && IsStopShortcut(vk, _ctrl, _shift, _alt, _win))
+            {
+                if (!_stopShortcutDown)
+                {
+                    _stopShortcutDown = true; // OS key-repeat must not double-fire
+                    StopShortcut?.Invoke();
+                }
+                return 1; // consumed: the chord is the stop gesture while a take is live
             }
 
             if (_sessionActive && vk == VK_SPACE && !isUp)

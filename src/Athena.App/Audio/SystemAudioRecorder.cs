@@ -91,16 +91,20 @@ public sealed class SystemAudioRecorder : IDisposable
         };
     }
 
-    /// <summary>Start capturing to <paramref name="path"/>'s DIRECTORY. The file
-    /// is named audio-system.wav so a dual-source session (mic + loopback) can
-    /// never have its two writers collide on one audio.wav — the collision
-    /// surfaces as "file used by another process" and fails the transcription.
-    /// Returns the actual path; the coordinator stores what this returns.</summary>
+    /// <summary>Start capturing to <paramref name="path"/>'s DIRECTORY. The RAW
+    /// capture is named system-capture.wav (mirroring the mic's capture.wav)
+    /// so a dual-source session never has its two writers collide on one
+    /// capture file — that collision surfaces as "file used by another
+    /// process" and fails the transcription. StopAsync later transcodes to a
+    /// DIFFERENT final name (audio-system.wav) — raw and final must not share
+    /// a name, or the transcode would overwrite its own source and the
+    /// following cleanup would delete the output. Returns the actual raw
+    /// path; the coordinator stores what this returns.</summary>
     public string Start(string path)
     {
         if (_capture is null) BuildGraph();
         var dir = Path.GetDirectoryName(path)!;
-        _rawPath = Path.Combine(dir, "audio-system.wav");
+        _rawPath = Path.Combine(dir, "system-capture.wav");
         _writer = new WaveFileWriter(_rawPath, _capture!.WaveFormat);
         _sawFirstBuffer = false;
         _lastBufferAtTicks = Environment.TickCount64;
@@ -172,7 +176,12 @@ public sealed class SystemAudioRecorder : IDisposable
 
         if (rawPath is null || !File.Exists(rawPath)) return rawPath;
 
-        var finalPath = Path.Combine(Path.GetDirectoryName(rawPath)!, "audio.wav");
+        // A DIFFERENT final name than the raw capture (see Start), and
+        // different from the MIC half's audio.wav: writing audio.wav here too
+        // meant the two transcodes collided — whichever finished second
+        // overwrote the first, and the success-path cleanup then deleted the
+        // file the history row references (broken playback for dual takes).
+        var finalPath = Path.Combine(Path.GetDirectoryName(rawPath)!, "audio-system.wav");
         try
         {
             await using (var source = new AudioFileReader(rawPath))

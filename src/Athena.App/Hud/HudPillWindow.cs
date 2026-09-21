@@ -59,6 +59,19 @@ public sealed class HudPillWindow : Window
     /// <summary>The 3-column flow-zone grid (SYSTEM | gap | MIC) that keeps the
     /// two sources' words side by side instead of stacked in one cell.</summary>
     private readonly Grid _flowRoot;
+    /// <summary>Clickable stop chip for the hands-off modes (hands-free lock,
+    /// latched system take) — visible for the whole take, in the FIXED-height
+    /// waveform row: the word row is Auto and collapses to zero before text
+    /// arrives, which previously hid the chip exactly when it was needed.</summary>
+    private readonly Border _stopChip;
+    private bool _stopMode;
+    /// <summary>Display name of the bound dictation key — hints must name the
+    /// CURRENT binding, so a rebind has to flow here (MainWindow does).</summary>
+    private string _hotkeyName = "`";
+
+    /// <summary>The pill's stop chip was clicked during a latched system-audio
+    /// take — the subscriber finalizes the take. Raised on the UI thread.</summary>
+    public event Action? StopClicked;
     private int _revealGeneration;
     // Current partial per source (null = that source has nothing to show).
     private string? _micPartial;
@@ -87,14 +100,6 @@ public sealed class HudPillWindow : Window
     // latched system-audio take (mic off) the loopback alone.
     private float _micLevelRaw;
     private float _sysLevelRaw;
-
-    /// <summary>Which behavior owns the bars right now: live levels while
-    /// recording, the autonomous sine dance while processing, static colored
-    /// stubs once done. Text visibility no longer gates the bars — they run
-    /// on their own row underneath the words.</summary>
-    private BarsMode _barsMode = BarsMode.Recording;
-
-    private enum BarsMode { Recording, Processing, Done }
 
     public HudPillWindow()
     {
@@ -274,6 +279,35 @@ public sealed class HudPillWindow : Window
         _flowRoot.Visibility = Visibility.Collapsed;
         grid.Children.Add(_flowRoot);
 
+        // The latched take's persistent STOP control. The finish gestures are
+        // tap+Space again, the hotkey again, or Esc — but before the chip, the
+        // only instruction flashed for under a second before streaming text
+        // replaced it, so during a long take nothing on screen said how to
+        // stop. The chip routes through the bound key (SendInput), meaning the
+        // hook sees exactly the gesture the user would have made.
+        _stopChip = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(70, 0xE5, 0x39, 0x35)),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(10, 2, 10, 3),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 0, 6, 0),
+            Visibility = Visibility.Collapsed,
+            Child = new TextBlock
+            {
+                Text = "stop",
+                FontSize = 11,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0x8B, 0x82)),
+            },
+        };
+        _stopChip.MouseDown += (_, _) => StopClicked?.Invoke();
+        Grid.SetRow(_stopChip, 1); // the waveform row: FIXED 34px — never collapses
+        Grid.SetColumnSpan(_stopChip, 3);
+        grid.Children.Add(_stopChip);
+
         _root = new StackPanel { VerticalAlignment = VerticalAlignment.Bottom };
         _root.Children.Add(_pillBorder);
         Content = _root;
@@ -319,9 +353,24 @@ public sealed class HudPillWindow : Window
         Show();
         _revealHolding = false; // a new session owns the pill from scratch
         _systemPartial = null;  // including any stale loopback row
+        _stopMode = false;      // incl. the stop affordances (chip, lane label)
+        _stopChip.Visibility = Visibility.Collapsed;
         _micLevelRaw = _sysLevelRaw = 0; // no stale level drives the fresh bars
         _ema = 0;
         SetLiveText(null);
+        // New session: NO animation from the previous one may survive.
+        // SetProcessing's sine animations are RepeatBehavior.Forever and keep
+        // overriding Height until explicitly stopped. The reset cannot live in
+        // SetRecording: MainWindow calls it BEFORE ShowPill, while the previous
+        // session's settled text still owns the label row, so the FlowVisible
+        // guard early-returns and the reset was skipped — take 2 danced with
+        // nobody speaking (take 1 was always clean: nothing was running yet).
+        foreach (var bar in _bars)
+        {
+            bar.BeginAnimation(HeightProperty, null);
+            bar.Height = 6;
+            bar.Fill = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8)); // undone → recording blue
+        }
         _pillBorder.BeginAnimation(OpacityProperty,
             new DoubleAnimation(1, TimeSpan.FromMilliseconds(140)));
     }
@@ -343,13 +392,25 @@ public sealed class HudPillWindow : Window
         if (systemLatched) _micLevelRaw = 0; // the mic is off; its stale level must not drive the bars
         if (FlowVisible) return; // words own the label row — the bars keep running underneath
         _label.Visibility = Visibility.Collapsed;
-        if (locked) SetLabel("hands-free — press ` to finish");
-        if (systemLatched) SetLabel("system audio — tap + Space to finish");
-        foreach (var bar in _bars)
+        if (locked) SetLabel($"hands-free — press {_hotkeyName} or click stop");
+        if (systemLatched) SetLabel("system audio — tap + Space or click stop");
+        // NOTE: the animation reset lives in ShowPill — this method is called
+        // BEFORE ShowPill on the hotkey-down path and early-returns above
+        // whenever the previous session's text is still on screen.
+    }
+
+    /// <summary>Rebind support: the printed hints name the current key.</summary>
+    public void SetHotkeyKeyName(string name) => _hotkeyName = name;
+    public void SetStopAffordance(bool on)
+    {
+        _stopMode = on;
+        _stopChip.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        if (on)
         {
-            bar.Fill = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8));
-            bar.BeginAnimation(HeightProperty, null);
-            bar.Height = 6;
+            // A no-text start lives in the click-through state; the chip must
+            // be clickable from the first moment, not only after the first
+            // words arrive and ShowFlow flips the exstyle.
+            SetHitTestTransparent(transparent: false);
         }
     }
 
@@ -452,7 +513,8 @@ public sealed class HudPillWindow : Window
         Grid.SetColumnSpan(_flowPanel, dual ? 1 : 3);
         Grid.SetColumnSpan(_flowPanelSystem, dual ? 1 : 3);
         _flowLabel.Text = dual ? "MIC" : "ATHENA WRITES";
-        _flowLabelSystem.Text = dual ? "SYSTEM" : "SYSTEM AUDIO";
+        _flowLabelSystem.Text = dual ? "SYSTEM"
+            : _stopMode ? $"SYSTEM — press {_hotkeyName} / click stop" : "SYSTEM AUDIO";
         _flowLabel.Visibility = hasMic ? Visibility.Visible : Visibility.Collapsed;
         _flowLabelSystem.Visibility = hasSys ? Visibility.Visible : Visibility.Collapsed;
         _flowPanel.Visibility = hasMic ? Visibility.Visible : Visibility.Collapsed;

@@ -157,8 +157,10 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
     /// <summary>Track whether any text event has arrived at all. The
     /// "straight to done" diagnosis needs it: with the server's decode lag,
     /// a short dictation can release the key before the FIRST delta lands —
-    /// no live text ever shown, though the session was perfectly healthy.</summary>
-    public bool HasEmittedText { get; private set; }
+    /// no live text ever shown, though the session was perfectly healthy.
+    /// Written by the receive loop, read by the pipeline thread — volatile,
+    /// or a cached false hides real text from the drain's liveness checks.</summary>
+    public volatile bool HasEmittedText;
 
     /// <summary>Rendered live text changed (finals + current partial).</summary>
     public event Action<string>? PartialChanged;

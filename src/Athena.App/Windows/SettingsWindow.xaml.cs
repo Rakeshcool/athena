@@ -106,7 +106,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
             {
                 _settings.HotkeyVk = key;
                 _hook.SetHotkey(key);
-                Save(); // persist + "saved" tick; the hook is already live
+                Save(); // persist + "saved" tick + HUD hint refresh (below); the hook is already live
             }
         }
         finally

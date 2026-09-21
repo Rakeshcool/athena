@@ -202,9 +202,38 @@ public sealed class DictationCoordinator : IDisposable
         ApplyGrammar(HotkeyEvent.EscDown);
     }
 
+    /// <summary>Ctrl+Shift+S (KeyboardHook.StopShortcut): stop a live take
+    /// from anywhere and DELIVER it — same finalize-and-paste path as the
+    /// key/stop chip, for when your hands are busy/mic-side and the mouse
+    /// can't reach the pill. (Esc remains the cancel: stop keeps, Esc
+    /// discards — the two gestures must never blur.) No-op outside a live
+    /// session by construction (the hook raises it only while one is active).</summary>
+    public void OnStopShortcut()
+    {
+        if (_state is DictationState.Idle or DictationState.Done
+            or DictationState.Failed or DictationState.Cancelled) return;
+        if (_state is DictationState.Finalizing or DictationState.Transcribing or DictationState.Inserting)
+        {
+            // Already in the pipeline: Ctrl+Shift+S means "let it finish" —
+            // nothing to finalize twice, and the words are about to land.
+            return;
+        }
+        FinalizeSession();
+    }
+
     private void ApplyGrammar(HotkeyEvent ev)
     {
         var fx = _grammar.Handle(ev, _clock());
+        // The grammar's timed windows (latch 0.5s, double-tap) arm a deadline
+        // per transition; events that resolve the phase disarm it. Delivery is
+        // OnTimerTick (MainWindow's 25ms timer) → DoubleTapTimeout. The old
+        // code discarded ArmTimerSeconds entirely, so PendingLatch never
+        // expired: a failed tap+Space froze the grammar — every later key-down
+        // swallowed by the busy guard — until the user pressed Esc.
+        if (fx.ArmTimerSeconds is { } window)
+            _latchDeadline = _clock() + window;
+        else if (fx.DisarmTimer)
+            _latchDeadline = 0;
         foreach (var hi in fx.Intents) HandleIntent(Map(hi));
     }
 
@@ -244,7 +273,7 @@ public sealed class DictationCoordinator : IDisposable
                 // cancel the mic runs until Esc and the next key-down is
                 // swallowed by the busy guard. Cancel + discard, then coach.
                 Cancel(discardArtifacts: true);
-                Hint?.Invoke($"Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk. Hold + Space locks hands-free.{(_settings.SystemAudioEnabled ? " Tap + Space captures system audio." : "")} Esc cancels.");
+                Hint?.Invoke($"Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk. Hold + Space locks hands-free.{(_settings.SystemAudioEnabled ? " Tap + Space captures system audio." : "")} Ctrl+Shift+S stops & pastes. Esc cancels.");
                 break;
             case Intent.AbortAccidental: Cancel(); break;
         }
@@ -262,6 +291,7 @@ public sealed class DictationCoordinator : IDisposable
         if (_state != DictationState.Idle && !overlapAllowed)
         {
             _grammar.Reset();
+            _latchDeadline = 0; // Reset() bypasses ApplyGrammar: clear the timer by hand
             return;
         }
 
@@ -399,6 +429,7 @@ public sealed class DictationCoordinator : IDisposable
                 // phantom on the next Space) and the open stream closed.
                 _systemRecorder = null;
                 _grammar.Reset();
+                _latchDeadline = 0; // Reset() bypasses ApplyGrammar: clear the timer by hand
                 var dead = _systemStream;
                 _systemStream = null;
                 if (dead is not null)
@@ -456,6 +487,7 @@ public sealed class DictationCoordinator : IDisposable
         if (_state != DictationState.Idle && !overlapAllowed)
         {
             _grammar.Reset();
+            _latchDeadline = 0; // Reset() bypasses ApplyGrammar: clear the timer by hand
             return;
         }
 
@@ -491,6 +523,7 @@ public sealed class DictationCoordinator : IDisposable
             // resolve the grammar. Without this reset the grammar is stranded
             // in SystemLatched and every future dictation is eaten.
             _grammar.Reset();
+            _latchDeadline = 0; // Reset() bypasses ApplyGrammar: clear the timer by hand
             FailCurrent(DictationFailure.Audio, ex.Message);
             return;
         }
@@ -685,15 +718,29 @@ public sealed class DictationCoordinator : IDisposable
         {
             // Both sides silent/cancelled/failed-and-handled. If the user Esc'd,
             // those halves already wrote the Cancelled row — only silence lands here.
-            if (_cancelRequested.TryRemove(flight.SessionId, out _))
+            if (_cancelRequested.TryGetValue(flight.SessionId, out _))
             {
-                _history.Upsert(new DictationRecord
+                // A half that cancelled mid-pipeline already wrote the row with
+                // its audio path — merge, don't overwrite (orphaned WAVs are
+                // invisible to retention).
+                var row = _history.Get(flight.SessionId);
+                if (row is not null && !string.IsNullOrEmpty(row.AudioPath))
                 {
-                    Id = flight.SessionId, StartedAt = flight.StartedAt,
-                    Status = SessionStatus.Cancelled, TargetAppName = flight.TargetApp,
-                    Source = sourceLabel,
-                });
+                    row.Status = SessionStatus.Cancelled;
+                    row.TargetAppName ??= flight.TargetApp;
+                    _history.Upsert(row);
+                }
+                else
+                {
+                    _history.Upsert(new DictationRecord
+                    {
+                        Id = flight.SessionId, StartedAt = flight.StartedAt,
+                        Status = SessionStatus.Cancelled, TargetAppName = flight.TargetApp,
+                        Source = sourceLabel,
+                    });
+                }
                 SetStateIfCurrent(flight, DictationState.Cancelled);
+                _cancelRequested.TryRemove(flight.SessionId, out _); // flag handled: no entry leak
                 return;
             }
             _history.Upsert(new DictationRecord
@@ -702,7 +749,12 @@ public sealed class DictationCoordinator : IDisposable
                 Status = SessionStatus.Silent, TargetAppName = flight.TargetApp,
                 Source = sourceLabel,
             });
-            Recovered?.Invoke("Nothing heard — recording kept in History.");
+            // Genuinely nothing on either source — but say WHICH shape failed:
+            // a dual take where neither mic nor loopback produced text reads as
+            // a broken setup (wrong device?), not as user error.
+            Recovered?.Invoke(sourceLabel == "mic+system"
+                ? "Nothing heard on mic or system audio — recording kept in History."
+                : "Nothing heard — recording kept in History.");
             SetStateIfCurrent(flight, DictationState.Done);
             return;
         }
@@ -734,12 +786,12 @@ public sealed class DictationCoordinator : IDisposable
                 RawTranscript = raw, CleanedTranscript = cleaned,
                 AudioDurationSeconds = duration.TotalSeconds,
                 TargetAppName = flight.TargetApp, Source = sourceLabel,
-            });
-            SetStateIfCurrent(flight, DictationState.Cancelled);
-            return;
-        }
+            });                SetStateIfCurrent(flight, DictationState.Cancelled);
+                _cancelRequested.TryRemove(flight.SessionId, out _); // flag handled: no entry leak
+                return;
+            }
 
-        SetStateIfCurrent(flight, DictationState.Inserting);
+            SetStateIfCurrent(flight, DictationState.Inserting);
         var outcome = await _inserter.InsertAsync(cleaned, CancellationToken.None);
         var (status, evt) = outcome switch
         {
@@ -814,16 +866,38 @@ public sealed class DictationCoordinator : IDisposable
         // Esc'd mid-processing: stop before spending cleanup work. The row
         // goes Cancelled with its audio kept — consistent with a recording-
         // phase cancel (the words were wanted once, then refused).
-        if (_cancelRequested.TryRemove(flight.SessionId, out _))
+        // READ, not remove: the mic and system halves of one flight share the
+        // flag, and a remove here would let whichever half ran first consume
+        // the cancel — the other half would proceed to cleanup and a Recorded
+        // row, half-inserting a dictation the user Esc'd. The flag's single
+        // consumer is InsertCombinedAsync.
+        if (_cancelRequested.TryGetValue(flight.SessionId, out _))
         {
+            // Both halves of a dual take observe the same flag now (read, not
+            // remove), so BOTH may land here — preserve whichever audio
+            // reference an earlier half already wrote instead of overwriting
+            // the row (an overwritten path orphans that WAV: untracked,
+            // invisible to retention).
             var cancelledDur = WavRecorder.DurationOf(wavPath);
-            _history.Upsert(new DictationRecord
+            var row = _history.Get(flight.SessionId);
+            if (row is null)
             {
-                Id = flight.SessionId, StartedAt = flight.StartedAt,
-                Status = SessionStatus.Cancelled, AudioPath = wavPath,
-                AudioDurationSeconds = cancelledDur.TotalSeconds, TargetAppName = flight.TargetApp,
-                Source = system ? "system" : "mic",
-            });
+                _history.Upsert(new DictationRecord
+                {
+                    Id = flight.SessionId, StartedAt = flight.StartedAt,
+                    Status = SessionStatus.Cancelled, AudioPath = wavPath,
+                    AudioDurationSeconds = cancelledDur.TotalSeconds, TargetAppName = flight.TargetApp,
+                    Source = system ? "system" : "mic",
+                });
+            }
+            else
+            {
+                row.Status = SessionStatus.Cancelled;
+                row.AudioPath = string.IsNullOrEmpty(row.AudioPath) ? wavPath : row.AudioPath;
+                row.AudioDurationSeconds ??= cancelledDur.TotalSeconds;
+                row.TargetAppName ??= flight.TargetApp;
+                _history.Upsert(row);
+            }
             SetStateIfCurrent(flight, DictationState.Cancelled);
             return null;
         }
@@ -914,6 +988,14 @@ public sealed class DictationCoordinator : IDisposable
             // Honest silence: empty transcript + (quiet peak OR no separation)
             // = nobody spoke → keep quietly. A LOUD recording with empty text
             // is kept too (the judgement could be wrong) — never an error row.
+            // In a DUAL take, though, the other half may carry the words: this
+            // side must NOT write its own Silent row (an Upsert overwrites the
+            // whole record — the mic half's transcript would be clobbered by
+            // the system half's "silence", and the balloon would cry
+            // "nothing heard" over a session that HAS text). The composer's
+            // both-null path handles the truly-both-silent case.
+            if (flight.SystemAudio is not null && flight.Recorder is not null)
+                return null;
             _history.Upsert(new DictationRecord
             {
                 Id = flight.SessionId, StartedAt = flight.StartedAt,
@@ -1035,6 +1117,11 @@ public sealed class DictationCoordinator : IDisposable
             }
             record.RawTranscript = raw;
             record.CleanedTranscript = cleaned;
+            // Copy BEFORE the row claims it: CopiedToClipboard must be true
+            // when written. Callers copy the returned text as well — a no-op
+            // re-copy of the same content that also covers the rare moment
+            // another app holds the clipboard lock.
+            try { System.Windows.Clipboard.SetText(cleaned); } catch { }
             record.Status = SessionStatus.CopiedToClipboard;
             record.ErrorCode = null;
             record.ErrorMessage = null;

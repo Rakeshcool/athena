@@ -247,6 +247,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _earcons = new EarconPlayer { Enabled = _settings.SoundsEnabled };
         _hud = new HudPillWindow();
+        // The pill's stop chip (latched system-audio takes): synthesize the
+        // exact gesture the user would have made — the bound hotkey press,
+        // which the latched grammar treats as "finish". No SendInput needed;
+        // the coordinator IS the hotkey's destination (same call the hook
+        // handler makes). UI updates flow through StateChanged as usual.
+        _hud.StopClicked += () => _coordinator!.OnHotkeyDown();
 
         // Warm capture pool: a spare graph is prebuilt while idle so key-down
         // pays only StartRecording() (first words are the ones it protects).
@@ -282,9 +288,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _coordinator.SystemAudioPartial += text => Dispatcher.BeginInvoke(() => _hud?.SetSystemLiveText(text));
         _coordinator.SystemAudioLatched += () => Dispatcher.BeginInvoke(() =>
         {
-            // ShowPill first (it clears both rows), then the latched label —
-            // the reverse order would let ShowPill's reset re-show the bars.
+            // ShowPill first (it clears both rows AND the stop affordances),
+            // then arm the chip + persistent stop label, then the latched hint.
             _hud?.ShowPill();
+            _hud?.SetStopAffordance(true);
             _hud?.SetRecording(locked: false, systemLatched: true);
             _earcons?.Play(Earcon.Start);
         });
@@ -300,6 +307,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             if (s is DictationState.Idle or DictationState.Failed
                 or DictationState.Cancelled)
                 _hud?.SetLiveText(null);
+            // The stop chip belongs to a LIVE hands-off take (lock or latch) —
+            // any terminal state retires it (Done included: the chip must not
+            // outlive the take and sit over the settled sentence).
+            if (s is DictationState.Idle or DictationState.Done
+                or DictationState.Failed or DictationState.Cancelled)
+                _hud?.SetStopAffordance(false);
         });
         _coordinator.CorrectionReady += (raw, cleaned) => Dispatcher.BeginInvoke(() =>
         {
@@ -321,12 +334,22 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         });
         _coordinator.Locked += () => Dispatcher.BeginInvoke(() =>
         {
+            // The hands-free lock gets the same stop affordance as the latch:
+            // during a locked take the user's hands are free and a mouse target
+            // is the one affordance that needs no gesture knowledge. ShowPill
+            // first (a lock can follow a hint-only pill state); if the pill is
+            // already visible, ShowPill is idempotent apart from the fade-in.
+            _hud?.ShowPill();
+            _hud?.SetStopAffordance(true);
             _hud?.SetRecording(locked: true);
             _earcons?.Play(Earcon.Lock);
         });
 
         _hook = new KeyboardHook(_settings.HotkeyVk, _settings.HotkeyModifiers);
         _defaultHint = $"hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to dictate";
+        // The pill's stop chip and every printed hint name the CURRENT binding
+        // — after a rebind the old key name must never linger on screen.
+        _hud?.SetHotkeyKeyName(Interop.HotkeyName.For((ushort)_settings.HotkeyVk));
         _hook.HotkeyDown += () =>
         {
             FileLog.Write("hotkey down");
@@ -352,6 +375,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             Dispatcher.BeginInvoke(() => _coordinator.OnHotkeyUp());
         };
         _hook.EscDown += () => Dispatcher.BeginInvoke(() => _coordinator.OnEscDown());
+        // Ctrl+Shift+S: the global stop for hands-off takes — raised only while
+        // a session is live (the hook scopes it), cancels the take, never pastes.
+        _hook.StopShortcut += () => Dispatcher.BeginInvoke(() => _coordinator.OnStopShortcut());
         // Space now routes through the grammar: hold+Space = hands-free lock,
         // tap+Space = system-audio latch (the grammar decides).
         _hook.SpaceLock += () => Dispatcher.BeginInvoke(() => _coordinator.ApplySpaceEvent());
@@ -584,6 +610,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // Latch availability follows the toggle live (the grammar consults it
         // on the next short-tap classification).
         _coordinator!.OnSystemAudioSettingChanged();
+        // A rebind must not leave stale key names in the HUD hints — the pill's
+        // stop label reads this on every latched take.
+        _hud?.SetHotkeyKeyName(Interop.HotkeyName.For((ushort)_settings.HotkeyVk));
         // Streaming sessions already read _settings.Language live; this keeps
         // the tray/status accurate without needing a restart either.
     }
