@@ -182,10 +182,14 @@ public sealed class KeyboardHook : IDisposable
                 return 1; // consume Esc during a live session
             }
 
-            if (_sessionActive && _hotkeyHeld && vk == VK_SPACE && !isUp)
+            if (_sessionActive && vk == VK_SPACE && !isUp)
             {
+                // Space belongs to the session from begin to idle, not only
+                // while the hotkey is held: hold+Space locks hands-free, and
+                // (tap → release → Space) latches a system-audio take — the
+                // grammar decides which gesture this is.
                 SpaceLock?.Invoke();
-                return 1; // consume the lock gesture's Space
+                return 1; // consume the gesture's Space
             }
 
             if (!isUp && vk is not (VK_LCONTROL or VK_RCONTROL or VK_LWIN or VK_RWIN

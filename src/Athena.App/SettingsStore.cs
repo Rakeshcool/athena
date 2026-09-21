@@ -70,6 +70,19 @@ public sealed class AthenaSettings
     /// the default neutral white highlight. Applies live; persisted like every
     /// other setting.</summary>
     public bool WarmAccent { get; set; }
+
+    /// <summary>System-audio dictation (WASAPI loopback): capture whatever the
+    /// default OUTPUT device is playing — a Zoom/Meet call, YouTube, Spotify —
+    /// alongside the microphone on every take. Tap + Space (or the hotkey a
+    /// second time) instead starts a loopback-ONLY take with the mic muted.
+    /// Mic behavior is completely unchanged when this is off (the default).</summary>
+    public bool SystemAudioEnabled { get; set; }
+
+    /// <summary>BCP-47 hint for the SYSTEM-AUDIO transcript (speaker language —
+    /// a Hindi meeting with an English UI is the common case). Empty = follow
+    /// the mic language. Independent of <see cref="Language"/> because the two
+    /// streams rarely speak the same language.</summary>
+    public string AudioLanguage { get; set; } = "";
 }
 
 public static class SettingsStore

@@ -508,6 +508,11 @@ public sealed class RealtimeAsrClient : IAsyncDisposable
         // Stop the sender (audio supply ended with the capture); the socket
         // and receive loop stay alive so in-flight text events still land.
         _outgoing.Writer.TryComplete();
+        // Seed the quiet-clock when NOTHING has arrived yet: _lastTextEventTicks
+        // starts at 0, and TickCount64 - 0 < quietMs is never true — the drain
+        // used to exit instantly for the exact case it exists for (a short take
+        // released before the server's first delta landed).
+        Interlocked.CompareExchange(ref _lastTextEventTicks, Environment.TickCount64, 0);
         var start = Environment.TickCount64;
         while (Environment.TickCount64 - start < capMs
                && Environment.TickCount64 - Interlocked.Read(ref _lastTextEventTicks) < quietMs

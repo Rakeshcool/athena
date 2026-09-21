@@ -1,28 +1,28 @@
 // Ported from JotCore/Sources/HotkeyEngine/HotkeyProcessor.swift
-// The pure hotkey grammar (Wispr style — critic reconciliation #1):
+// The pure hotkey grammar (Wispr style — critic reconciliation #1), extended
+// with the system-audio latch (Windows-port original):
 //
-//   hold ≥ 0.3s            → push-to-talk: key-up finalizes
-//   tap, tap (≤ 0.35s gap) → hands-free lock: press again finalizes (optional)
+//   hold ≥ 0.3s            → push-to-talk: key-up finalizes (mic + system audio)
+//   tap + Space (≤ 0.5s)   → SYSTEM-ONLY latch: loopback keeps recording,
+//                            the mic is muted; tap+Space again (or the key)
+//                            finishes; Esc cancels
+//   tap, tap (≤ 0.35s gap) → hands-free lock (when DoubleTapLockEnabled)
 //   single tap             → coaching hint, session quietly cancelled
 //   Esc                    → cancel
 //   other key < 1s in      → accidental chord, silent abort
 //   Space while held       → hands-free lock (timing-free gesture)
+//
+// The latch is ADDITIVE and opt-in (SystemAudioLatchEnabled): with the flag
+// off the grammar behaves exactly as before — a short tap goes straight to
+// the coaching hint, PendingLatch is never entered. With it on, a short tap
+// waits 0.5s for a possible Space before falling through to the hint; every
+// fall-through preserves the old outcome (hint + discard).
 //
 // Recording ALWAYS starts on the first key-down (Begin) so no audio is ever
 // lost while the grammar disambiguates. Pure: callers pass monotonic
 // timestamps; timers are returned as effects and fed back in.
 
 namespace Athena.Core;
-
-public enum HotkeyIntent
-{
-    Begin,
-    LockIn,
-    Finalize,
-    Cancel,
-    ShortTapHint,
-    AbortAccidental,
-}
 
 public enum HotkeyEvent
 {
@@ -34,6 +34,21 @@ public enum HotkeyEvent
     SpaceLock,
     /// <summary>The double-tap window expired (fed back by the timer the caller armed).</summary>
     DoubleTapTimeout,
+}
+
+public enum HotkeyIntent
+{
+    Begin,
+    LockIn,
+    Finalize,
+    Cancel,
+    ShortTapHint,
+    AbortAccidental,
+    /// <summary>Begin a system-audio-only take: loopback captures the playing
+    /// audio, the mic is muted. Emitted by tap+Space.</summary>
+    BeginSystemAudio,
+    /// <summary>Finish the latched system-audio take (same finalize path, system source only).</summary>
+    FinalizeSystemAudio,
 }
 
 public struct HotkeyEffects
@@ -57,6 +72,13 @@ public enum HotkeyPhase
     PendingSecondTap,
     /// <summary>Hands-free.</summary>
     Locked,
+    /// <summary>Short tap released, waiting to see whether the user means
+    /// tap+Space (system latch). Still recording. Only entered when
+    /// SystemAudioLatchEnabled — otherwise a short tap goes straight to the
+    /// hint, exactly as before.</summary>
+    PendingLatch,
+    /// <summary>System-audio-only take, latched. Mic muted. Recording.</summary>
+    SystemLatched,
 }
 
 public static class HotkeyTuning
@@ -64,6 +86,10 @@ public static class HotkeyTuning
     public const double HoldThreshold = 0.3;
     public const double DoubleTapWindow = 0.35;
     public const double InterruptionWindow = 1.0;
+    /// <summary>How long a short tap waits for the Space that turns it into a
+    /// system-audio latch. Long enough to be deliberate, short enough that a
+    /// plain tap's discard feels immediate.</summary>
+    public const double LatchWindow = 0.5;
 }
 
 /// <summary>Pure and clock-free — exhaustively unit-tested. See HotkeyProcessorTests.swift.</summary>
@@ -79,6 +105,10 @@ public struct HotkeyProcessor
     public HotkeyPhase Phase => _phase;
 
     public bool DoubleTapLockEnabled;
+
+    /// <summary>Opt-in: a short tap may become a system-audio latch via tap+Space.
+    /// Off = the original grammar, byte for byte.</summary>
+    public bool SystemAudioLatchEnabled;
 
     public bool IsKeyHeld => _phase == HotkeyPhase.Pressed;
     public bool IsSessionActive => _phase != HotkeyPhase.Idle;
@@ -123,6 +153,12 @@ public struct HotkeyProcessor
                 {
                     _phase = HotkeyPhase.PendingSecondTap;
                     fx.ArmTimerSeconds = HotkeyTuning.DoubleTapWindow;
+                }
+                else if (SystemAudioLatchEnabled)
+                {
+                    // Wait briefly: Space now means "keep the loopback, mute my mic".
+                    _phase = HotkeyPhase.PendingLatch;
+                    fx.ArmTimerSeconds = HotkeyTuning.LatchWindow;
                 }
                 else
                 {
@@ -188,6 +224,59 @@ public struct HotkeyProcessor
                 _swallowNextUp = false;
                 break;
 
+            case (HotkeyPhase.PendingSecondTap, HotkeyEvent.SpaceLock):
+                // Space after a short tap, double-tap lock on: the user released
+                // too early for the hold gesture — treat exactly like the timing-
+                // free lock. (Was a no-op before; the latch flag gates reachability.)
+                _phase = HotkeyPhase.Locked;
+                _swallowNextUp = true;
+                fx.Intents = new[] { HotkeyIntent.LockIn };
+                fx.DisarmTimer = true;
+                break;
+
+            // pendingLatch (latch feature on; short tap released, waiting for Space)
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.SpaceLock):
+                // tap + Space = system-audio-only take.
+                _phase = HotkeyPhase.SystemLatched;
+                _swallowNextUp = true; // Space's own key-up must not leak anywhere
+                fx.Intents = new[] { HotkeyIntent.BeginSystemAudio };
+                fx.DisarmTimer = true;
+                break;
+
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.HotkeyDown):
+                // Second press inside the window: hands-free lock (both sources).
+                _phase = HotkeyPhase.Locked;
+                _swallowNextUp = true;
+                fx.Intents = new[] { HotkeyIntent.LockIn };
+                fx.DisarmTimer = true;
+                break;
+
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.DoubleTapTimeout):
+                // No Space came: exactly the old single-tap outcome.
+                _phase = HotkeyPhase.Idle;
+                fx.Intents = new[] { HotkeyIntent.ShortTapHint };
+                break;
+
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.EscDown):
+                _phase = HotkeyPhase.Idle;
+                fx.Intents = new[] { HotkeyIntent.Cancel };
+                fx.DisarmTimer = true;
+                break;
+
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.OtherKeyDown):
+                _phase = HotkeyPhase.Idle;
+                fx.DisarmTimer = true;
+                fx.Intents = new[] {
+                    now - _sessionStartAt < HotkeyTuning.InterruptionWindow
+                        ? HotkeyIntent.AbortAccidental
+                        : HotkeyIntent.Cancel
+                };
+                break;
+
+            case (HotkeyPhase.PendingLatch, HotkeyEvent.HotkeyUp):
+                _swallowNextUp = false;
+                break;
+
             // locked (hands-free)
             case (HotkeyPhase.Locked, HotkeyEvent.HotkeyDown):
                 _phase = HotkeyPhase.Idle;
@@ -203,6 +292,41 @@ public struct HotkeyProcessor
             case (HotkeyPhase.Locked, HotkeyEvent.HotkeyUp):
                 _swallowNextUp = false;
                 break;
+
+            // systemLatched: the loopback-only take. The mic is muted; the user's
+            // hands are free to work. Every exit is deliberate.
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.SpaceLock):
+                // tap+Space again = finish.
+                _phase = HotkeyPhase.Idle;
+                fx.Intents = new[] { HotkeyIntent.FinalizeSystemAudio };
+                break;
+
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.HotkeyDown):
+                // Pressing the hotkey again also finishes — same pipeline, and
+                // discoverable by feel if the Space-tap rhythm is lost.
+                _phase = HotkeyPhase.Idle;
+                _swallowNextUp = true;
+                fx.Intents = new[] { HotkeyIntent.FinalizeSystemAudio };
+                break;
+
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.EscDown):
+                _phase = HotkeyPhase.Idle;
+                fx.Intents = new[] { HotkeyIntent.Cancel };
+                break;
+
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.OtherKeyDown):
+                // A latched take is a background take — the user may type freely.
+                // Typing cancels: they changed their mind about the capture.
+                _phase = HotkeyPhase.Idle;
+                fx.Intents = new[] { HotkeyIntent.Cancel };
+                break;
+
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.HotkeyUp):
+                _swallowNextUp = false;
+                break;
+
+            case (HotkeyPhase.SystemLatched, HotkeyEvent.DoubleTapTimeout):
+                break; // nothing armed a timer in this phase
 
             // Everything else: ignore.
             default:

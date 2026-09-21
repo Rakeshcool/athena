@@ -268,14 +268,25 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             dictionary: _dictionary);
 
         _coordinator.StateChanged += s => Dispatcher.BeginInvoke(() => OnStateChanged(s));
-        _coordinator.Level += l => _hud?.OnLevel(l);
+        _coordinator.Level += l => Dispatcher.BeginInvoke(() => _hud?.OnLevel(l));
+        _coordinator.SystemLevel += l => Dispatcher.BeginInvoke(() => _hud?.OnSystemLevel(l));
         _coordinator.LivePartial += text => Dispatcher.BeginInvoke(() =>
         {
             _hud?.SetLiveText(text);
             // Partials also land in the main window's status pill — the spec's
             // "partial transcript inside the pill" — while the HUD pill serves
-            // the you're-in-another-app case.
+            // the you're-in-another-app case. The system row intentionally
+            // never lands here: the status pill is the user's own speech.
             HintText.Text = text;
+        });
+        _coordinator.SystemAudioPartial += text => Dispatcher.BeginInvoke(() => _hud?.SetSystemLiveText(text));
+        _coordinator.SystemAudioLatched += () => Dispatcher.BeginInvoke(() =>
+        {
+            // ShowPill first (it clears both rows), then the latched label —
+            // the reverse order would let ShowPill's reset re-show the bars.
+            _hud?.ShowPill();
+            _hud?.SetRecording(locked: false, systemLatched: true);
+            _earcons?.Play(Earcon.Start);
         });
         // When the pill returns to ready (and on explicit terminal states), the
         // last partial must not linger as if it were current — the coordinator
@@ -341,7 +352,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             Dispatcher.BeginInvoke(() => _coordinator.OnHotkeyUp());
         };
         _hook.EscDown += () => Dispatcher.BeginInvoke(() => _coordinator.OnEscDown());
-        _hook.SpaceLock += () => Dispatcher.BeginInvoke(() => _coordinator.HandleIntent(Athena.App.Intent.LockIn));
+        // Space now routes through the grammar: hold+Space = hands-free lock,
+        // tap+Space = system-audio latch (the grammar decides).
+        _hook.SpaceLock += () => Dispatcher.BeginInvoke(() => _coordinator.ApplySpaceEvent());
+        // Non-modifier keys now reach the grammar while a session is live —
+        // the chord-abort/cancel paths were dormant until the loopback latch
+        // made an active, hands-busy session the norm.
+        _hook.OtherKeyDown += _ => Dispatcher.BeginInvoke(() => _coordinator.ApplyOtherKeyDown());
         _hook.Log += m => { FileLog.Write(m); Dispatcher.BeginInvoke(() => AppendLog(m)); };
         _hook.Start();
 
@@ -349,6 +366,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _coordinator.StateChanged += s =>
             _hook.SessionActive = s is not (DictationState.Idle or DictationState.Done
                 or DictationState.Failed or DictationState.Cancelled);
+
+        // The grammar's latch/double-tap windows are timer-driven: the pure
+        // processor arms a deadline, this 25ms UI timer delivers the timeout.
+        _latchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
+        _latchTimer.Tick += (_, _) => _coordinator.OnTimerTick();
+        _latchTimer.Start();
 
         _host = new NotifyIconHost(Dispatcher);
         _tray = new TrayIcon(_host);
@@ -421,6 +444,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     private DispatcherTimer? _hudHideTimer;
+    private DispatcherTimer? _latchTimer; // grammar-window timer feedback (25ms)
 
     /// <summary>Schedules the pill fade. Each call replaces any pending hide —
     /// the Done state's default 1400ms stretches to cover the correction
@@ -557,6 +581,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         LaunchAtLogin.SetEnabled(
             _settings.LaunchAtLogin,
             Environment.ProcessPath ?? "Athena.exe");
+        // Latch availability follows the toggle live (the grammar consults it
+        // on the next short-tap classification).
+        _coordinator!.OnSystemAudioSettingChanged();
         // Streaming sessions already read _settings.Language live; this keeps
         // the tray/status accurate without needing a restart either.
     }

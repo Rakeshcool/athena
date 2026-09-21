@@ -194,6 +194,18 @@
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="CrossCheckToggle" VerticalAlignment="Center"/>
                 </Grid>
+                <Border Style="{StaticResource RowDivider}"/>
+                <Grid Margin="0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Capture system audio" FontSize="13"/>
+                        <TextBlock Text="Also transcribe what your computer is playing — meeting calls, YouTube, Spotify. Hold the key for both your voice and the audio; tap the key then Space for the audio only" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <ui:ToggleSwitch Grid.Column="1" x:Name="SystemAudioToggle" VerticalAlignment="Center"/>
+                </Grid>
 
                 <TextBlock Style="{StaticResource SectionLabel}" Text="Speech language"/>
                 <ComboBox x:Name="LanguageBox" Margin="0,6,0,0"/>

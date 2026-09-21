@@ -44,12 +44,25 @@ public sealed class HudPillWindow : Window
     private readonly Border _pillBorder;
     private readonly StackPanel _barsPanel;
     private readonly TextBlock _label;
-    private readonly StackPanel _flowPanel;
+    private readonly DockPanel _flowPanel;
     private readonly TextBlock _flowLabel;
     private readonly TextBlock _flowText;
     private readonly ScrollViewer _flowScroll;
+    // SYSTEM AUDIO lane: the loopback source's live text, sitting BESIDE the
+    // mic lane (left column) when both sources stream — a meeting's words
+    // never share a paragraph with yours.
+    private readonly DockPanel _flowPanelSystem;
+    private readonly TextBlock _flowLabelSystem;
+    private readonly TextBlock _flowTextSystem;
+    private readonly ScrollViewer _flowScrollSystem;
     private readonly WrapPanel _flowReveal;
+    /// <summary>The 3-column flow-zone grid (SYSTEM | gap | MIC) that keeps the
+    /// two sources' words side by side instead of stacked in one cell.</summary>
+    private readonly Grid _flowRoot;
     private int _revealGeneration;
+    // Current partial per source (null = that source has nothing to show).
+    private string? _micPartial;
+    private string? _systemPartial;
 
     /// <summary>True from ShowCorrection until the next session begins: the
     /// reveal (or its settled fixed text) owns the pill and must survive the
@@ -69,6 +82,19 @@ public sealed class HudPillWindow : Window
     private readonly DoubleAnimation[] _barAnimations;
 
     private float _ema;
+    // Raw (unsmoothed) levels per source; the bars follow the louder of the
+    // two — your voice when you speak, the meeting when it's loud, and in a
+    // latched system-audio take (mic off) the loopback alone.
+    private float _micLevelRaw;
+    private float _sysLevelRaw;
+
+    /// <summary>Which behavior owns the bars right now: live levels while
+    /// recording, the autonomous sine dance while processing, static colored
+    /// stubs once done. Text visibility no longer gates the bars — they run
+    /// on their own row underneath the words.</summary>
+    private BarsMode _barsMode = BarsMode.Recording;
+
+    private enum BarsMode { Recording, Processing, Done }
 
     public HudPillWindow()
     {
@@ -78,7 +104,7 @@ public sealed class HudPillWindow : Window
         AllowsTransparency = true;
         Background = System.Windows.Media.Brushes.Transparent;
         Width = 600;
-        Height = 170;
+        Height = 236; // text zone (≤110) + gap + waveform row + padding + taskbar margin
         ShowActivated = false;
 
         // The pill stretches with its content (bars alone when idle, label +
@@ -104,12 +130,12 @@ public sealed class HudPillWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MaxHeight = FlowMaxHeight,
-            // REQUIRED: the scroll area lives in a horizontal StackPanel, which
-            // measures children with INFINITE width — a wrapping TextBlock would
-            // lay out as one endless line, the pill would cap at MaxWidth and
-            // every word past the cap would render outside the visible pill
-            // (text "stops expanding" after a few words). A finite max width
-            // makes the TextBlock wrap and the vertical scroll engage.
+            // REQUIRED: a wrapping TextBlock needs a bounded width — under an
+            // unbounded measure it lays out as one endless line, the pill caps
+            // at MaxWidth and every word past the cap renders OUTSIDE the
+            // visible pill (text "stops expanding" after a few words). The
+            // lane's DockPanel passes finite width; this cap is the belt to
+            // its braces.
             MaxWidth = 430, // pill 560 − padding 32 − label ~90
             Content = new Grid
             {
@@ -117,13 +143,55 @@ public sealed class HudPillWindow : Window
             },
         };
         _flowScroll.ScrollChanged += OnFlowScrollChanged;
-        _flowPanel = new StackPanel
+        // Lanes are DockPanels, NOT horizontal StackPanels: a horizontal
+        // StackPanel measures children with INFINITE width, so in a half-pill
+        // lane the wrapping TextBlock would lay out as one endless line and
+        // spill across the lane divider — the overlap this layout exists to
+        // kill. DockPanel passes the lane's finite width through.
+        _flowPanel = new DockPanel
         {
-            Orientation = Orientation.Horizontal,
+            LastChildFill = true,
             Visibility = Visibility.Collapsed,
         };
+        DockPanel.SetDock(_flowLabel, Dock.Left);
         _flowPanel.Children.Add(_flowLabel);
         _flowPanel.Children.Add(_flowScroll);
+
+        _flowLabelSystem = new TextBlock
+        {
+            FontSize = 10,
+            FontWeight = FontWeights.Medium,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0xA0, 0xA6)),
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 5, 10, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        _flowTextSystem = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xB8, 0xBC, 0xC0)), // a step dimmer than the mic row
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        _flowScrollSystem = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = FlowMaxHeight,
+            MaxWidth = 430,
+            Content = _flowTextSystem,
+        };
+        _flowScrollSystem.ScrollChanged += (_, e) =>
+        {
+            if (e.ExtentHeightChange != 0) _flowScrollSystem.ScrollToEnd();
+        };
+        _flowPanelSystem = new DockPanel
+        {
+            LastChildFill = true,
+            Visibility = Visibility.Collapsed,
+        };
+        DockPanel.SetDock(_flowLabelSystem, Dock.Left);
+        _flowPanelSystem.Children.Add(_flowLabelSystem);
+        _flowPanelSystem.Children.Add(_flowScrollSystem);
 
         _pillBorder = new Border
         {
@@ -140,13 +208,23 @@ public sealed class HudPillWindow : Window
         };
 
         var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });          // row 0: words
+        // Row 1 is FIXED at max-bar + margin: an Auto row here resizes with
+        // every animation frame (bars breathe 6→26px) and the whole pill
+        // visibly jitters. A fixed slot keeps the pill's height steady while
+        // the bars dance inside it.
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });       // row 1: waveform
         _pillBorder.Child = grid;
 
+        // Two stacked rows: 0 = words (flow lanes / status label), 1 = the
+        // waveform, which runs in EVERY state — under the words while they
+        // stream, under the label otherwise. Text never replaces bars.
         _barsPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom, // grow upward — equalizer look in the fixed slot
+            Margin = new Thickness(0, 8, 0, 0), // breathing room under the text row
         };
         for (var i = 0; i < 5; i++)
         {
@@ -162,6 +240,7 @@ public sealed class HudPillWindow : Window
             _bars.Add(bar);
             _barsPanel.Children.Add(bar);
         }
+        Grid.SetRow(_barsPanel, 1);
         grid.Children.Add(_barsPanel);
 
         _label = new TextBlock
@@ -177,7 +256,23 @@ public sealed class HudPillWindow : Window
         };
         grid.Children.Add(_label);
 
-        grid.Children.Add(_flowPanel);
+        // Flow zone = the 3-column grid (SYSTEM | gap | MIC). A lone source's
+        // row spans all three columns (full width); dual rows sit in the outer
+        // columns so the two sources' words can never overlap or stack.
+        _flowRoot = new Grid();
+        _flowRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _flowRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+        _flowRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(_flowPanelSystem, 0);
+        Grid.SetColumn(_flowPanel, 2);
+        // The lanes MUST be children of the flow grid — setting attached
+        // Column properties without parenting made them orphans: a zero-height
+        // word row and no text on screen at all.
+        _flowRoot.Children.Add(_flowPanelSystem);
+        _flowRoot.Children.Add(_flowPanel);
+        Grid.SetRow(_flowRoot, 0);
+        _flowRoot.Visibility = Visibility.Collapsed;
+        grid.Children.Add(_flowRoot);
 
         _root = new StackPanel { VerticalAlignment = VerticalAlignment.Bottom };
         _root.Children.Add(_pillBorder);
@@ -223,6 +318,9 @@ public sealed class HudPillWindow : Window
         Reposition();
         Show();
         _revealHolding = false; // a new session owns the pill from scratch
+        _systemPartial = null;  // including any stale loopback row
+        _micLevelRaw = _sysLevelRaw = 0; // no stale level drives the fresh bars
+        _ema = 0;
         SetLiveText(null);
         _pillBorder.BeginAnimation(OpacityProperty,
             new DoubleAnimation(1, TimeSpan.FromMilliseconds(140)));
@@ -235,15 +333,18 @@ public sealed class HudPillWindow : Window
         _pillBorder.BeginAnimation(OpacityProperty, fade);
     }
 
-    /// <summary>Recording state: waveform responds to the mic level (or, when
-    /// locked, a stop hint shows — the hands-free affordance). Flowing text
-    /// stays up if present — words on screen outlast the state flip.</summary>
-    public void SetRecording(bool locked)
+    /// <summary>Recording state: the waveform responds to the louder of the
+    /// mic and loopback levels (a stop hint shows when hands-free, the
+    /// loopback hint when latched). Flowing text stays up if present — words
+    /// on screen outlast the state flip — and the bars run underneath either
+    /// way.</summary>
+    public void SetRecording(bool locked, bool systemLatched = false)
     {
-        if (FlowVisible) return;
+        if (systemLatched) _micLevelRaw = 0; // the mic is off; its stale level must not drive the bars
+        if (FlowVisible) return; // words own the label row — the bars keep running underneath
         _label.Visibility = Visibility.Collapsed;
-        _barsPanel.Visibility = locked ? Visibility.Collapsed : Visibility.Visible;
         if (locked) SetLabel("hands-free — press ` to finish");
+        if (systemLatched) SetLabel("system audio — tap + Space to finish");
         foreach (var bar in _bars)
         {
             bar.Fill = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8));
@@ -252,13 +353,12 @@ public sealed class HudPillWindow : Window
         }
     }
 
-    /// <summary>Processing state: bars run an autonomous sine dance — unless
-    /// words are on screen, which persist through processing (mac behavior).</summary>
+    /// <summary>Processing state: the sine dance runs in EVERY state — beneath
+    /// the streaming words (which persist through processing, mac behavior),
+    /// not instead of them.</summary>
     public void SetProcessing()
     {
-        if (FlowVisible) return;
         _label.Visibility = Visibility.Collapsed;
-        _barsPanel.Visibility = Visibility.Visible;
         foreach (var (bar, anim) in _bars.Zip(_barAnimations))
             bar.BeginAnimation(HeightProperty, anim);
     }
@@ -268,8 +368,12 @@ public sealed class HudPillWindow : Window
     /// settled sentence stays until the HUD dissolves; don't overwrite it.</summary>
     public void SetDone(bool ok, string message)
     {
-        if (FlowVisible) return;
-        _barsPanel.Visibility = Visibility.Collapsed;
+        if (FlowVisible)
+        {
+            // The settled sentence owns the label row; the bars keep their
+            // dance underneath until the coordinator fades the pill away.
+            return;
+        }
         foreach (var bar in _bars)
         {
             bar.BeginAnimation(HeightProperty, null);
@@ -281,27 +385,59 @@ public sealed class HudPillWindow : Window
         SetLabel(message);
     }
 
-    private bool FlowVisible => _flowPanel.Visibility == Visibility.Visible;
+    private bool FlowVisible =>
+        _flowPanel.Visibility == Visibility.Visible || _flowPanelSystem.Visibility == Visibility.Visible;
 
-    /// <summary>Live partial transcript from the realtime stream. Null hides
-    /// the flow. Called at streaming rate; renders inside the pill next to the
-    /// ATHENA WRITES label — the first reference screenshot's look.</summary>
+    /// <summary>Live partial transcript from the realtime stream. Null clears
+    /// the mic row. Called at streaming rate; renders inside the pill next to
+    /// the ATHENA WRITES label — the first reference screenshot's look.</summary>
     public void SetLiveText(string? text)
     {
         _revealGeneration++; // any new content invalidates a running reveal
         // A superseded reveal must not share the pill with anything else: drop
         // its runs and restore the text layer unconditionally — or a fast
         // back-to-back dictation would show the PREVIOUS session's struck-out
-        // words while the current words stay invisible (flowText was left
-        // Collapsed by ShowCorrection and only the collapse-completion restored
-        // it, and that completion is generation-guarded away on supersession).
-        if (_flowReveal.Visibility == Visibility.Visible)
+        // words while the current words stay invisible.
+        TeardownRevealIfAny();
+        _micPartial = string.IsNullOrWhiteSpace(text) ? null : text;
+        RefreshFlow();
+        if (_micPartial is not null)
         {
-            _flowReveal.Visibility = Visibility.Collapsed;
-            _flowReveal.Children.Clear();
-            _flowText.Visibility = Visibility.Visible;
+            // Full text, never truncated — the pill grows to FlowMaxHeight and
+            // then scrolls. Sticky-bottom keeps the newest words in view.
+            _flowText.Text = _micPartial;
         }
-        if (string.IsNullOrWhiteSpace(text))
+    }
+
+    /// <summary>Live partial from the SYSTEM-AUDIO stream. Independent of the
+    /// mic row: either can be empty while the other streams.</summary>
+    public void SetSystemLiveText(string? text)
+    {
+        _revealGeneration++;
+        TeardownRevealIfAny();
+        _systemPartial = string.IsNullOrWhiteSpace(text) ? null : text;
+        RefreshFlow();
+        if (_systemPartial is not null)
+            _flowTextSystem.Text = _systemPartial;
+    }
+
+    private void TeardownRevealIfAny()
+    {
+        if (_flowReveal.Visibility != Visibility.Visible) return;
+        _flowReveal.Visibility = Visibility.Collapsed;
+        _flowReveal.Children.Clear();
+        _flowText.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Row visibility from the two partials: both rows up when both
+    /// sources stream; the ATHENA WRITES label only labels a lone mic row and
+    /// SYSTEM AUDIO a lone system row (with both visible the rows are their
+    /// own labels — vertical space beats repetition).</summary>
+    private void RefreshFlow()
+    {
+        var hasMic = _micPartial is not null;
+        var hasSys = _systemPartial is not null;
+        if (!hasMic && !hasSys)
         {
             if (_revealHolding) return; // reveal/settled text owns the pill until hide
             _stickToBottom = true; // a fresh session follows the newest words
@@ -309,32 +445,50 @@ public sealed class HudPillWindow : Window
             return;
         }
         _revealHolding = false;
-        ShowFlow("ATHENA WRITES");
-        // Full text, never truncated — the pill grows to FlowMaxHeight and
-        // then scrolls. Sticky-bottom keeps the newest words in view; the stick
-        // flag is deliberately NOT reset here (see _stickToBottom).
-        _flowText.Text = text;
+        var dual = hasMic && hasSys;
+        // Dual: the two lanes sit side by side in the outer columns (SYSTEM |
+        // gap | MIC). Lone: that source spans all three columns — full pill
+        // width, as wide as the old single row ever was.
+        Grid.SetColumnSpan(_flowPanel, dual ? 1 : 3);
+        Grid.SetColumnSpan(_flowPanelSystem, dual ? 1 : 3);
+        _flowLabel.Text = dual ? "MIC" : "ATHENA WRITES";
+        _flowLabelSystem.Text = dual ? "SYSTEM" : "SYSTEM AUDIO";
+        _flowLabel.Visibility = hasMic ? Visibility.Visible : Visibility.Collapsed;
+        _flowLabelSystem.Visibility = hasSys ? Visibility.Visible : Visibility.Collapsed;
+        _flowPanel.Visibility = hasMic ? Visibility.Visible : Visibility.Collapsed;
+        _flowPanelSystem.Visibility = hasSys ? Visibility.Visible : Visibility.Collapsed;
+        ShowFlow();
     }
 
-    /// <summary>Label + flowing text take over the pill (bars fold away); the
-    /// shape stretches to the content. The pill is only ever interactive
-    /// (wheel-scrollable) while flowing text is on screen.</summary>
-    private void ShowFlow(string label)
+    /// <summary>Flow lanes take the word row; the waveform keeps its own row
+    /// underneath — words never replace the bars. The pill is only ever
+    /// interactive (wheel-scrollable) while flowing text is on screen.</summary>
+    private void ShowFlow()
     {
-        _flowLabel.Text = label;
-        _flowLabel.Visibility = Visibility.Visible;
-        _flowPanel.Visibility = Visibility.Visible;
-        _barsPanel.Visibility = Visibility.Collapsed;
+        _flowRoot.Visibility = Visibility.Visible;
         _label.Visibility = Visibility.Collapsed;
         SetHitTestTransparent(transparent: false);
     }
 
     private void HideFlow()
     {
-        _flowPanel.Visibility = Visibility.Collapsed;
-        _flowLabel.Visibility = Visibility.Collapsed;
-        _barsPanel.Visibility = Visibility.Visible;
+        _flowRoot.Visibility = Visibility.Collapsed;
         SetHitTestTransparent(transparent: true);
+    }
+
+    /// <summary>The reveal renders in the mic lane as a full-width lane under
+    /// the YOU SAID label; the system lane is already down (cleared above).
+    /// The mic lane is forced visible — a latched system take can reach here
+    /// with no mic partial, and the reveal lives inside that lane.</summary>
+    private void ShowCorrectionFlow()
+    {
+        Grid.SetColumnSpan(_flowPanel, 3);
+        _flowLabel.Text = "YOU SAID";
+        _flowLabel.Visibility = Visibility.Visible;
+        _flowLabelSystem.Visibility = Visibility.Collapsed;
+        _flowPanelSystem.Visibility = Visibility.Collapsed;
+        _flowPanel.Visibility = Visibility.Visible;
+        ShowFlow();
     }
 
     private void SetHitTestTransparent(bool transparent)
@@ -389,6 +543,11 @@ public sealed class HudPillWindow : Window
         _revealGeneration++;
         var generation = _revealGeneration;
 
+        // The reveal owns the whole pill — a still-streaming system row must
+        // not share it (the latched take was already finalized by now; clear
+        // the stale row).
+        _systemPartial = null;
+        _flowPanelSystem.Visibility = Visibility.Collapsed;
         _flowText.Visibility = Visibility.Collapsed;
         _flowReveal.Children.Clear();
         _flowReveal.Visibility = Visibility.Visible;
@@ -421,7 +580,7 @@ public sealed class HudPillWindow : Window
             Margin = new Thickness(1, 0, 0, 0),
         });
         _revealHolding = true;
-        ShowFlow("YOU SAID");
+        ShowCorrectionFlow();
 
         // Beat 2: the mark. Red + strikethrough, held long enough to read.
         foreach (var run in CutRuns())
@@ -509,11 +668,26 @@ public sealed class HudPillWindow : Window
         _label.Visibility = Visibility.Visible;
     }
 
-    /// <summary>Called at meter rate while recording; EMA-smoothed attack/release
-    /// with per-bar phase offsets so the waveform dances, not pulses.</summary>
+    /// <summary>Mic meter input; EMA-smoothed attack/release with per-bar phase
+    /// offsets so the waveform dances, not pulses. Runs regardless of whether
+    /// words are on screen — text above, animation below.</summary>
     public void OnLevel(float level)
     {
-        if (FlowVisible) return; // words on screen — the bars are folded away
+        _micLevelRaw = level;
+        RenderLevels();
+    }
+
+    /// <summary>Loopback meter input; the bars follow the louder of the two
+    /// sources — your voice when you speak, the meeting when it's loud.</summary>
+    public void OnSystemLevel(float level)
+    {
+        _sysLevelRaw = level;
+        RenderLevels();
+    }
+
+    private void RenderLevels()
+    {
+        var level = Math.Max(_micLevelRaw, _sysLevelRaw);
         _ema = level > _ema ? 0.35f * level + 0.65f * _ema : 0.08f * level + 0.92f * _ema;
         var h = 6 + Math.Clamp(_ema, 0, 1) * 22;
         var phaseBase = DateTime.Now.Ticks / 60000.0;

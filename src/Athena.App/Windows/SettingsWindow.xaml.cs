@@ -42,7 +42,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         // Implicit save, live: every control persists on change (the close-save
         // remains as a backstop). Each save flashes the "saved" tick.
         LanguageBox.SelectionChanged += (_, _) => Save();
-        foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, FileFallbackToggle, CrossCheckToggle, LaunchAtLoginToggle, WarmAccentToggle })
+        foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, FileFallbackToggle, CrossCheckToggle, SystemAudioToggle, LaunchAtLoginToggle, WarmAccentToggle })
         {
             toggle.Checked += (_, _) => Save();
             toggle.Unchecked += (_, _) => Save();
@@ -138,6 +138,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         LanguageBox.SelectedIndex = Math.Max(0, langs.FindIndex(l => l.Code == norm));
         LaunchAtLoginToggle.IsChecked = LaunchAtLogin.IsEnabled();
         WarmAccentToggle.IsChecked = _settings.WarmAccent;
+        SystemAudioToggle.IsChecked = _settings.SystemAudioEnabled;
         RefreshDict();
     }
 
@@ -154,6 +155,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         _settings.Language = (LanguageBox.SelectedItem as ComboBoxItem)?.Tag as string
             ?? Athena.Core.LanguageCatalog.Default;
         _settings.WarmAccent = WarmAccentToggle.IsChecked == true;
+        _settings.SystemAudioEnabled = SystemAudioToggle.IsChecked == true;
         SettingsStore.Save(_settings);
         ThemeManager.Apply(ThemeManager.FromSettings(_settings.WarmAccent));
         _settingsChanged();

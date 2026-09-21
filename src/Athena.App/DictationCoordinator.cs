@@ -33,12 +33,23 @@ public enum Intent
     Cancel,
     ShortTapHint,
     AbortAccidental,
+    /// <summary>Begin a loopback-only take (tap+Space): system audio captured, mic muted.</summary>
+    BeginSystemAudio,
+    /// <summary>Finish the latched system-audio take.</summary>
+    FinalizeSystemAudio,
 }
 
 /// <summary>Everything an in-flight pipeline task needs to finish without
-/// touching state that may already belong to the NEXT session.</summary>
+/// touching state that may already belong to the NEXT session. Recorder is
+/// null on a latched system-only take (the mic was never opened).</summary>
 internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string? TargetApp,
-    WavRecorder Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise);
+    WavRecorder? Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise,
+    SystemAudioRecorder? SystemAudio = null, RealtimeAsrClient? SystemStream = null);
+
+/// <summary>One source's transcribe+clean output. Insertion is deliberately
+/// NOT part of this: with two sources in flight, neither half may insert —
+/// the orchestrator composes both transcripts and inserts once.</summary>
+internal sealed record PipelineResult(string Raw, string Cleaned, string WavPath, TimeSpan Duration);
 
 public sealed class DictationCoordinator : IDisposable
 {
@@ -63,6 +74,13 @@ public sealed class DictationCoordinator : IDisposable
     private NoiseFloorEstimator _noise = new();
     private Task? _inFlight;
     private RealtimeAsrClient? _stream;
+    // System-audio (loopback) side of the session. Null unless the feature is
+    // on AND the gesture/capture shape calls for it — the mic path is fully
+    // independent of this field's state.
+    private SystemAudioRecorder? _systemRecorder;
+    private RealtimeAsrClient? _systemStream;
+    /// <summary>The latch timer's expiry time (WavRecorder.Now seconds); 0 = none armed.</summary>
+    private double _latchDeadline;
     /// <summary>Sessions the user cancelled while already in the pipeline
     /// (Finalizing/Transcribing/Inserting). Written from the UI thread (Esc),
     /// consumed on pipeline background threads — hence concurrent.</summary>
@@ -71,6 +89,15 @@ public sealed class DictationCoordinator : IDisposable
     /// <summary>Live partial transcript from the realtime stream (audio thread).
     /// The HUD shows it as you speak — the text is provisional until Done.</summary>
     public event Action<string>? LivePartial;
+
+    /// <summary>Live partial from the SYSTEM-AUDIO stream (loopback). Only
+    /// raised while the mic path is silent (see HUD gating) — the pill shows
+    /// the meeting's words on the SYSTEM AUDIO row.</summary>
+    public event Action<string>? SystemAudioPartial;
+
+    /// <summary>Raised when the grammar latches a system-audio-only take —
+    /// the HUD switches its copy (loopback, no mic).</summary>
+    public event Action? SystemAudioLatched;
 
     /// <summary>Grace the commit gets to flush its finals before the file
     /// endpoint takes over (localhost: finals land in tens of ms).</summary>
@@ -81,6 +108,9 @@ public sealed class DictationCoordinator : IDisposable
 
     public event Action<DictationState>? StateChanged;
     public event Action<float>? Level;
+    /// <summary>Live loopback meter level; the HUD bars follow the louder of
+    /// this and the mic (a meeting's audio drives the wave when it's loud).</summary>
+    public event Action<float>? SystemLevel;
     public event Action<string>? Hint;
     public event Action<string>? Error;
     /// <summary>Raised when a queued/recovered dictation produced text — the tray shows a balloon.</summary>
@@ -113,8 +143,41 @@ public sealed class DictationCoordinator : IDisposable
         _settings = settings;
         _dictionary = dictionary;
         _log = log ?? (_ => { });
-        _grammar = new HotkeyProcessor { DoubleTapLockEnabled = false };
+        _grammar = new HotkeyProcessor
+        {
+            DoubleTapLockEnabled = false,
+            SystemAudioLatchEnabled = settings.SystemAudioEnabled,
+        };
     }
+
+    /// <summary>System-audio capture was toggled in Settings: push the new
+    /// opt-in into the grammar (a latch gesture is only offered while the
+    /// feature is on) and refresh the prewarmed loopback graph.</summary>
+    public void OnSystemAudioSettingChanged()
+    {
+        _grammar.SystemAudioLatchEnabled = _settings.SystemAudioEnabled;
+    }
+
+    /// <summary>The grammar's timer feedback (latch + double-tap windows):
+    /// must be called from the UI thread on a cadence (MainWindow's timer).
+    /// Events only fire the moment the deadline passes — ordering safe.</summary>
+    public void OnTimerTick()
+    {
+        if (_latchDeadline > 0 && _clock() >= _latchDeadline)
+        {
+            _latchDeadline = 0;
+            ApplyGrammar(HotkeyEvent.DoubleTapTimeout);
+        }
+    }
+
+    /// <summary>Space, raw from the hook. The grammar owns its meaning:
+    /// hold+Space is the hands-free lock, tap+Space is the system-audio
+    /// latch, and idle-phase Space is a no-op.</summary>
+    public void ApplySpaceEvent() => ApplyGrammar(HotkeyEvent.SpaceLock);
+
+    /// <summary>Any other key, raw from the hook: chord-abort/cancel semantics
+    /// are the grammar's (previously forwarded nowhere — now live).</summary>
+    public void ApplyOtherKeyDown() => ApplyGrammar(HotkeyEvent.OtherKeyDown);
 
     public DictationState State => _state;
 
@@ -153,6 +216,8 @@ public sealed class DictationCoordinator : IDisposable
         HotkeyIntent.Cancel => Intent.Cancel,
         HotkeyIntent.ShortTapHint => Intent.ShortTapHint,
         HotkeyIntent.AbortAccidental => Intent.AbortAccidental,
+        HotkeyIntent.BeginSystemAudio => Intent.BeginSystemAudio,
+        HotkeyIntent.FinalizeSystemAudio => Intent.FinalizeSystemAudio,
         _ => Intent.ShortTapHint,
     };
 
@@ -164,13 +229,22 @@ public sealed class DictationCoordinator : IDisposable
             case Intent.LockIn: LockIn(); break;
             case Intent.Finalize: FinalizeSession(); break;
             case Intent.Cancel: Cancel(); break;
+            case Intent.BeginSystemAudio:
+                // The tap that armed the latch already opened a mic session;
+                // a sub-hold tap is a blip — discard it: this take is
+                // system-only, the mic must not keep running underneath.
+                if (_state is DictationState.Warming or DictationState.Recording)
+                    Cancel(discardArtifacts: true);
+                BeginSystem();
+                break;
+            case Intent.FinalizeSystemAudio: FinalizeSession(); break;
             case Intent.ShortTapHint:
                 // A tap is a coaching moment AND an orphan session: the grammar
                 // went idle but the session is still recording — without this
                 // cancel the mic runs until Esc and the next key-down is
                 // swallowed by the busy guard. Cancel + discard, then coach.
                 Cancel(discardArtifacts: true);
-                Hint?.Invoke($"Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk. Hold + Space locks hands-free. Esc cancels.");
+                Hint?.Invoke($"Hold {Interop.HotkeyName.For((ushort)_settings.HotkeyVk)} to talk. Hold + Space locks hands-free.{(_settings.SystemAudioEnabled ? " Tap + Space captures system audio." : "")} Esc cancels.");
                 break;
             case Intent.AbortAccidental: Cancel(); break;
         }
@@ -209,74 +283,53 @@ public sealed class DictationCoordinator : IDisposable
             // by design) and every History row kept a 48kHz float capture.
             var path = Path.Combine(folder, "capture.wav");
             _recorder = _recorderFactory();
-            // Per-session capture, NOT _field handlers: a superseded recorder's
-            // late events must never write the new session's noise/level state
-            // or fail its row (the bug was FailCurrent using _sessionId).
-            _recorder.Level += l =>
-            {
-                if (sessionId != _sessionId) return; // superseded session's tap
-                _latestLevel = l;
-                _noise.Ingest(l);
-                Level?.Invoke(l);
-            };
-            _recorder.Failed += ex =>
-            {
-                if (sessionId != _sessionId) return; // stale recorder failure
-                _log($"capture failed: {ex.Message}");
-                FileLog.Write($"capture failed: {ex}");
-                FailCurrent(DictationFailure.Audio, ex.Message);
-            };
-
-            // The realtime stream is created and subscribed BEFORE Start —
-            // the web client's exact ordering (socket + session.update exist
-            // before getUserMedia's first buffer). No queue, no pump: the
-            // audio callback feeds the client's FIFO channel directly, the
-            // single sender task is the socket's only writer. (The queue+
-            // 20ms-pump design both stranded post-key-up audio in the queue
-            // and raced concurrent SendAsync calls — a semaphore let two
-            // chunks swap wire order, scrambling the audio.)
-            if (_settings.StreamingEnabled)
-            {
-                var dict = _dictionary?.Snapshot();
-                var phrases = dict is null ? null : dict.Terms.Select(t => t.Term).ToList();
-                var stream = new RealtimeAsrClient(_settings.AsrBaseUrl, new RealtimeSessionConfig
-                {
-                    SampleRate = _recorder.NativeSampleRate ?? 48000,
-                    Language = _settings.Language,
-                    BoostPhrases = phrases is { Count: > 0 } ? phrases : null,
-                });
-                stream.PartialChanged += text =>
-                {
-                    // Superseded session: never paint a dying stream's text
-                    // over fresh state. (_stream null is fine during finalize —
-                    // the display drain keeps delivering late deltas, and that
-                    // late live text is exactly what the user should see.)
-                    if (sessionId != _sessionId) return;
-                    LivePartial?.Invoke(text);
-                };
-                _stream = stream;
-            }
-
-            // Audio callback → FIFO channel. Unconditional: SendAudio no-ops
-            // once the stream is dead/committed, so a session that fell back
-            // to file transcription just discards.
-            if (_stream is not null)
-                _recorder.PcmChunk += chunk => _stream?.SendAudio(chunk);
+            PrepareMicSide(_recorder, sessionId);
             _recorder.Start(path);
         }
         catch (Exception ex)
         {
             FileLog.Write($"mic open failed: {ex}");
+            if (_stream is not null)
+            {
+                // The recorder is dead but the stream object was already
+                // created — dispose it or the session leaks a WebSocket.
+                var dead = _stream;
+                _stream = null;
+                _ = Task.Run(async () => { await dead.CancelAsync(); await dead.DisposeAsync(); });
+            }
             _recorder = null;
             try { Directory.Delete(SessionFolder(_sessionId), true); } catch { }
             FailCurrent(DictationFailure.NoMicrophone, ex.Message);
             return;
         }
 
+        // System audio runs BESIDE the mic (both sources in one take). Opening
+        // the loopback can fail for reasons that must not touch the mic take
+        // (no output endpoint, endpoint busy): degrade to mic-only and say so.
+        if (_settings.SystemAudioEnabled)
+        {
+            try
+            {
+                var sys = new SystemAudioRecorder();
+                sys.Warm();
+                _systemRecorder = sys;
+                PrepareSystemSide(sys, sessionId);
+                sys.Start(Path.Combine(SessionFolder(_sessionId), "system-capture.wav"));
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"loopback open failed (continuing mic-only): {ex}");
+                _systemRecorder = null;
+                _systemStream = null;
+            }
+        }
+
         SetState(DictationState.Recording);
 
         if (_stream is { } liveStream)
             _ = ConnectStreamAsync(liveStream);
+        if (_systemStream is { } sysLive)
+            _ = ConnectStreamAsync(sysLive);
 
         _history.Upsert(new DictationRecord
         {
@@ -284,7 +337,177 @@ public sealed class DictationCoordinator : IDisposable
             StartedAt = _startedAt,
             Status = SessionStatus.Recording,
             TargetAppName = _targetApp,
+            Source = _systemRecorder is not null ? "mic+system" : "mic",
         });
+    }
+
+    /// <summary>Per-session mic wiring (events + optional realtime stream).
+    /// Extracted so Begin and BeginSystem share the exact ordering the web
+    /// client taught us: stream created and subscribed BEFORE Start, the audio
+    /// callback feeds the client's FIFO channel directly (no queue, no pump —
+    /// the single sender task is the socket's only writer).</summary>
+    private void PrepareMicSide(WavRecorder recorder, Guid sessionId)
+    {
+        // Per-session capture, NOT _field handlers: a superseded recorder's
+        // late events must never write the new session's noise/level state
+        // or fail its row (the bug was FailCurrent using _sessionId).
+        recorder.Level += l =>
+        {
+            if (sessionId != _sessionId) return; // superseded session's tap
+            _latestLevel = l;
+            _noise.Ingest(l);
+            Level?.Invoke(l);
+        };
+        recorder.Failed += ex =>
+        {
+            if (sessionId != _sessionId) return; // stale recorder failure
+            _log($"capture failed: {ex.Message}");
+            FileLog.Write($"capture failed: {ex}");
+            FailCurrent(DictationFailure.Audio, ex.Message);
+        };
+        if (_settings.StreamingEnabled)
+            _stream = CreateStream(recorder.NativeSampleRate ?? 48000, sessionId, system: false);
+        // Audio callback → FIFO channel. Unconditional: SendAudio no-ops
+        // once the stream is dead/committed, so a session that fell back
+        // to file transcription just discards.
+        if (_stream is not null)
+            recorder.PcmChunk += chunk => _stream?.SendAudio(chunk);
+    }
+
+    /// <summary>Per-session loopback wiring — the mic-path twin of
+    /// PrepareMicSide. System partials ride their own event so the HUD can
+    /// label them; a mid-take loopback failure DEGRADES the dual take to
+    /// mic-only instead of failing the user's dictation.</summary>
+    private void PrepareSystemSide(SystemAudioRecorder sys, Guid sessionId)
+    {
+        // Level wiring: the HUD bars follow the louder of mic and loopback, so
+        // a loud meeting drives the wave even when the user is quiet.
+        sys.Level += l =>
+        {
+            if (sessionId != _sessionId) return; // superseded session's tap
+            SystemLevel?.Invoke(l);
+        };
+        sys.Failed += ex =>
+        {
+            if (sessionId != _sessionId) return;
+            _log($"loopback failed: {ex.Message}");
+            FileLog.Write($"loopback failed: {ex}");
+            if (_recorder is null)
+            {
+                // Latched take: loopback was the ONLY source — session over.
+                // The grammar must be un-latched (it would otherwise finalize a
+                // phantom on the next Space) and the open stream closed.
+                _systemRecorder = null;
+                _grammar.Reset();
+                var dead = _systemStream;
+                _systemStream = null;
+                if (dead is not null)
+                    _ = Task.Run(async () => { await dead.CancelAsync(); await dead.DisposeAsync(); });
+                FailCurrent(DictationFailure.Audio, ex.Message);
+                return;
+            }
+            // Dual take: degrade to mic-only, never fail the user's dictation.
+            if (_systemRecorder == sys)
+            {
+                _systemRecorder = null;
+                _ = Task.Run(async () => { try { await sys.StopAsync(); } catch { } });
+            }
+        };
+        if (_settings.StreamingEnabled)
+            _systemStream = CreateStream(sys.NativeSampleRate ?? 48000, sessionId, system: true);
+        if (_systemStream is not null)
+            sys.PcmChunk += chunk => _systemStream?.SendAudio(chunk);
+    }
+
+    /// <summary>Create + subscribe a realtime stream for one source. The
+    /// superseded-session guard on PartialChanged is per-session (captured id);
+    /// system partials ride their own event so the HUD can label the row.</summary>
+    private RealtimeAsrClient CreateStream(int sampleRate, Guid sessionId, bool system)
+    {
+        var dict = _dictionary?.Snapshot();
+        var phrases = dict is null ? null : dict.Terms.Select(t => t.Term).ToList();
+        var stream = new RealtimeAsrClient(_settings.AsrBaseUrl, new RealtimeSessionConfig
+        {
+            SampleRate = sampleRate,
+            Language = _settings.Language,
+            BoostPhrases = phrases is { Count: > 0 } ? phrases : null,
+        });
+        stream.PartialChanged += text =>
+        {
+            // Superseded session: never paint a dying stream's text over
+            // fresh state. (_stream null is fine during finalize — the
+            // display drain keeps delivering late deltas.)
+            if (sessionId != _sessionId) return;
+            if (system) SystemAudioPartial?.Invoke(text);
+            else LivePartial?.Invoke(text);
+        };
+        return stream;
+    }
+
+    /// <summary>tap+Space: a SYSTEM-AUDIO-ONLY take. The mic is never opened —
+    /// the meeting plays through the speakers and the loopback captures it;
+    /// the user's own voice must not join the transcript. Finishes via
+    /// tap+Space again, the hotkey, or Esc; typing cancels.</summary>
+    private void BeginSystem()
+    {
+        var overlapAllowed = _state is DictationState.Finalizing or DictationState.Transcribing
+            or DictationState.Inserting or DictationState.Done or DictationState.Failed
+            or DictationState.Cancelled;
+        if (_state != DictationState.Idle && !overlapAllowed)
+        {
+            _grammar.Reset();
+            return;
+        }
+
+        _sessionId = Guid.NewGuid();
+        _startedAt = DateTime.Now;
+        _targetApp = Interop.Native.ForegroundProcessName();
+        var sessionId = _sessionId;
+        SetState(DictationState.Warming);
+
+        try
+        {
+            var folder = SessionFolder(_sessionId);
+            Directory.CreateDirectory(folder);
+            var sys = new SystemAudioRecorder();
+            sys.Warm();
+            _systemRecorder = sys;
+            PrepareSystemSide(sys, sessionId);
+            sys.Start(Path.Combine(folder, "capture.wav"));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"loopback open failed: {ex}");
+            _systemRecorder = null;
+            if (_systemStream is not null)
+            {
+                var dead = _systemStream;
+                _systemStream = null;
+                _ = Task.Run(async () => { await dead.CancelAsync(); await dead.DisposeAsync(); });
+            }
+            try { Directory.Delete(SessionFolder(_sessionId), true); } catch { }
+            // The user's hands are FREE at this point (the gesture already
+            // completed) — unlike a failed mic begin, no key-up is coming to
+            // resolve the grammar. Without this reset the grammar is stranded
+            // in SystemLatched and every future dictation is eaten.
+            _grammar.Reset();
+            FailCurrent(DictationFailure.Audio, ex.Message);
+            return;
+        }
+
+        SetState(DictationState.Recording);
+        if (_systemStream is { } sysLive)
+            _ = ConnectStreamAsync(sysLive);
+
+        _history.Upsert(new DictationRecord
+        {
+            Id = _sessionId,
+            StartedAt = _startedAt,
+            Status = SessionStatus.Recording,
+            TargetAppName = _targetApp,
+            Source = "system",
+        });
+        SystemAudioLatched?.Invoke();
     }
 
     /// <summary>Connect the realtime socket. Audio is NOT pumped here: the
@@ -320,79 +543,243 @@ public sealed class DictationCoordinator : IDisposable
     {
         if (_state is not (DictationState.Recording or DictationState.Warming)) return;
         var recorder = _recorder;
-        if (recorder is null) return;
+        var systemRecorder = _systemRecorder;
+        var systemStream = _systemStream;
+        if (recorder is null && systemRecorder is null) return;
 
         SetState(DictationState.Finalizing);
-        var flight = new FlightContext(_sessionId, _startedAt, _targetApp, recorder, _stream, _noise);
+        var flight = new FlightContext(_sessionId, _startedAt, _targetApp,
+            recorder, _stream, _noise,
+            SystemAudio: systemRecorder, SystemStream: systemStream);
         _recorder = null;
         _stream = null;
+        _systemRecorder = null;
+        _systemStream = null;
 
         // Trailing capture: if the user is STILL SPEAKING at key-up, keep the
         // mic open until they stop (hand anticipates mouth). Bounded so a noisy
-        // room can never hold the session open.
+        // room can never hold the session open. Mic-only: a playing meeting
+        // would never go quiet, so loopback has no trailing logic.
         var threshold = TrailingCapturePolicy.ThresholdForSession(_noise);
-        var wasSpeaking = _latestLevel >= threshold;
+        var wasSpeaking = recorder is not null && _latestLevel >= threshold;
         _latestLevel = 0;
 
         _inFlight = Task.Run(async () =>
         {
             try
             {
-                if (wasSpeaking)
-                    await CaptureTrailingSpeechAsync(flight.Recorder, threshold);
-                var wavPath = await flight.Recorder.StopAsync();
-                var streamed = (string?)null;
-                if (flight.Stream is not null)
-                {
-                    // Policy decides whether the stream's final is worth
-                    // collecting: with file-fallback off the stream is DISPLAY
-                    // only — its text will never be inserted, so don't make
-                    // the user wait for the commit round-trip.
-                    if (TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
-                        == TranscriptSource.LiveStream)
-                    {
-                        // Web-client ordering lives inside FinishAsync: the FIFO
-                        // channel is completed and fully drained BEFORE the commit
-                        // marker goes out — trailing-capture audio included.
-                        streamed = await flight.Stream.FinishAsync(StreamFinishGrace, CancellationToken.None);
-                        FileLog.Write(streamed is not null
-                            ? "streamed transcript used (file fallback skipped)"
-                            : "stream produced no text — falling back to file transcription");
-                    }
-                    else
-                    {
-                        // Display-only stream. DRAIN the decode lag: the
-                        // server keeps decoding what it already holds and
-                        // emits deltas/completed with a lag — a short dictation
-                        // released before the FIRST delta landed would otherwise
-                        // show no live text at all (pill jumped straight to
-                        // "done"). DrainDisplayAsync stops the audio supply,
-                        // keeps the socket open while events land (quiet 450ms,
-                        // cap 3s), then cancels+closes. The pipeline runs IN
-                        // PARALLEL — the drain never delays the paste.
-                        var drain = flight.Stream.DrainDisplayAsync();
-                        var pipeline = RunPipelineAsync(flight, wavPath, streamed);
-                        await Task.WhenAll(drain, pipeline);
-                        await flight.Stream.DisposeAsync();
-                        FileLog.Write($"display stream drained (text seen: {flight.Stream.HasEmittedText})");
-                        return;
-                    }
-                    await flight.Stream.DisposeAsync();
-                }
-                await RunPipelineAsync(flight, wavPath, streamed);
+                // Both sources run through transcribe+clean IN PARALLEL —
+                // two local servers, no shared lock — and the composer joins
+                // them. Neither half ever inserts on its own when the other
+                // exists: the user gets ONE insertion, mic text first, blank
+                // line, then the meeting's text.
+                var micTask = RunMicFlightAsync(flight, threshold, wasSpeaking);
+                var sysTask = RunSystemFlightAsync(flight);
+                await Task.WhenAll(micTask, sysTask);
+                await InsertCombinedAsync(flight, micTask.Result, sysTask.Result);
             }
             catch (Exception ex)
             {
                 // The pipeline must never take the app down mid-dictation.
                 FileLog.Write($"PIPELINE FAULT: {ex}");
-                try { await flight.Recorder.StopAsync(); } catch { }
+                if (flight.Recorder is not null) try { await flight.Recorder.StopAsync(); } catch { }
+                if (flight.SystemAudio is not null) try { await flight.SystemAudio.StopAsync(); } catch { }
                 FailFlight(flight, DictationFailure.Network, ex.Message);
             }
             finally
             {
                 if (flight.Stream is not null) await flight.Stream.DisposeAsync();
+                if (flight.SystemStream is not null) await flight.SystemStream.DisposeAsync();
             }
         });
+    }
+
+    /// <summary>The mic half of a finalize: trailing capture, stop, then
+    /// transcribe+clean. Returns the mic side's result for the composer —
+    /// null when the mic was absent (latched take), silent, or failed.</summary>
+    private async Task<PipelineResult?> RunMicFlightAsync(FlightContext flight, float threshold, bool wasSpeaking)
+    {
+        var recorder = flight.Recorder;
+        if (recorder is null) return null; // latched take: mic was never opened
+
+
+        if (wasSpeaking)
+            await CaptureTrailingSpeechAsync(recorder, threshold);
+        var wavPath = await recorder.StopAsync();
+        var streamed = (string?)null;
+        if (flight.Stream is not null)
+        {
+            // Policy decides whether the stream's final is worth
+            // collecting: with file-fallback off the stream is DISPLAY
+            // only — its text will never be inserted, so don't make
+            // the user wait for the commit round-trip.
+            if (TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
+                == TranscriptSource.LiveStream)
+            {
+                // Web-client ordering lives inside FinishAsync: the FIFO
+                // channel is completed and fully drained BEFORE the commit
+                // marker goes out — trailing-capture audio included.
+                streamed = await flight.Stream.FinishAsync(StreamFinishGrace, CancellationToken.None);
+                FileLog.Write(streamed is not null
+                    ? "streamed transcript used (file fallback skipped)"
+                    : "stream produced no text — falling back to file transcription");
+            }
+            else
+            {
+                // Display-only stream: DRAIN the decode lag while the
+                // transcribe+clean runs IN PARALLEL (zero added latency).
+                var pipeline = RunSourcePipelineAsync(flight, wavPath, streamed, system: false);
+                var drain = flight.Stream.DrainDisplayAsync();
+                await drain;
+                var result = await pipeline;
+                await flight.Stream.DisposeAsync();
+                FileLog.Write($"display stream drained (text seen: {flight.Stream.HasEmittedText})");
+                return result;
+            }
+            await flight.Stream.DisposeAsync();
+        }
+        return await RunSourcePipelineAsync(flight, wavPath, streamed, system: false);
+    }
+
+    /// <summary>The system-audio half of a finalize: stop, transcode, then
+    /// transcribe+clean — the mic path's twin, same stream policy (commit
+    /// when the stream is the final source; drain when display-only).</summary>
+    private async Task<PipelineResult?> RunSystemFlightAsync(FlightContext flight)
+    {
+        var sys = flight.SystemAudio;
+        if (sys is null) return null;
+
+        var wavPath = await sys.StopAsync();
+        var streamed = (string?)null;
+        if (flight.SystemStream is not null)
+        {
+            if (TranscriptSourcePolicy.FinalSource(_settings.StreamingEnabled, _settings.FileFallbackEnabled)
+                == TranscriptSource.LiveStream)
+            {
+                streamed = await flight.SystemStream.FinishAsync(StreamFinishGrace, CancellationToken.None);
+            }
+            else
+            {
+                var pipeline = RunSourcePipelineAsync(flight, wavPath, streamed, system: true);
+                var drain = flight.SystemStream.DrainDisplayAsync();
+                await drain;
+                var result = await pipeline;
+                await flight.SystemStream.DisposeAsync();
+                return result;
+            }
+            await flight.SystemStream.DisposeAsync();
+        }
+        return await RunSourcePipelineAsync(flight, wavPath, streamed, system: true);
+    }
+
+    /// <summary>Compose the two sources and insert ONCE. Legacy single-source
+    /// sessions flow through unchanged: one side is null, the composer yields
+    /// the other verbatim. The authoritative cancel check lives HERE (the
+    /// per-half checks are best-effort work savers, not gatekeepers).</summary>
+    private async Task InsertCombinedAsync(FlightContext flight, PipelineResult? mic, PipelineResult? sys)
+    {
+        var sourceLabel = flight.SystemAudio is null ? "mic"
+            : flight.Recorder is not null ? "mic+system" : "system";
+
+        if (mic is null && sys is null)
+        {
+            // Both sides silent/cancelled/failed-and-handled. If the user Esc'd,
+            // those halves already wrote the Cancelled row — only silence lands here.
+            if (_cancelRequested.TryRemove(flight.SessionId, out _))
+            {
+                _history.Upsert(new DictationRecord
+                {
+                    Id = flight.SessionId, StartedAt = flight.StartedAt,
+                    Status = SessionStatus.Cancelled, TargetAppName = flight.TargetApp,
+                    Source = sourceLabel,
+                });
+                SetStateIfCurrent(flight, DictationState.Cancelled);
+                return;
+            }
+            _history.Upsert(new DictationRecord
+            {
+                Id = flight.SessionId, StartedAt = flight.StartedAt,
+                Status = SessionStatus.Silent, TargetAppName = flight.TargetApp,
+                Source = sourceLabel,
+            });
+            Recovered?.Invoke("Nothing heard — recording kept in History.");
+            SetStateIfCurrent(flight, DictationState.Done);
+            return;
+        }
+
+        var raw = MultiSourceComposer.Compose(mic?.Raw, sys?.Raw);
+        var cleaned = MultiSourceComposer.Compose(mic?.Cleaned, sys?.Cleaned);
+        var wavPath = mic?.WavPath ?? sys!.WavPath;
+        var duration = mic?.Duration ?? sys!.Duration;
+
+        _history.Upsert(new DictationRecord
+        {
+            Id = flight.SessionId, StartedAt = flight.StartedAt,
+            Status = SessionStatus.Recorded, AudioPath = wavPath,
+            RawTranscript = raw, CleanedTranscript = cleaned,
+            AudioDurationSeconds = duration.TotalSeconds,
+            ModelId = "nemotron-asr + local-llm",
+            Source = sourceLabel,
+        });
+
+        // Esc'd between cleanup and insertion: the words were transcribed and
+        // polished, but the user refused them — no insertion, no reveal. The
+        // row KEEPS the transcript (that's what happened).
+        if (_cancelRequested.TryRemove(flight.SessionId, out _))
+        {
+            _history.Upsert(new DictationRecord
+            {
+                Id = flight.SessionId, StartedAt = flight.StartedAt,
+                Status = SessionStatus.Cancelled, AudioPath = wavPath,
+                RawTranscript = raw, CleanedTranscript = cleaned,
+                AudioDurationSeconds = duration.TotalSeconds,
+                TargetAppName = flight.TargetApp, Source = sourceLabel,
+            });
+            SetStateIfCurrent(flight, DictationState.Cancelled);
+            return;
+        }
+
+        SetStateIfCurrent(flight, DictationState.Inserting);
+        var outcome = await _inserter.InsertAsync(cleaned, CancellationToken.None);
+        var (status, evt) = outcome switch
+        {
+            InsertionOutcome.Inserted => (SessionStatus.Inserted, DictationEvent.Inserted),
+            InsertionOutcome.FellBackToClipboard => (SessionStatus.CopiedToClipboard, DictationEvent.InsertionFellBackToClipboard),
+            InsertionOutcome.BlockedSecure => (SessionStatus.HeldSecure, DictationEvent.InsertionBlockedSecure),
+            _ => (SessionStatus.Failed, DictationEvent.TranscriptFailed),
+        };
+        _history.Upsert(new DictationRecord
+        {
+            Id = flight.SessionId, StartedAt = flight.StartedAt, Status = status,
+            AudioPath = wavPath, RawTranscript = raw, CleanedTranscript = cleaned,
+            AudioDurationSeconds = duration.TotalSeconds,
+            PipelineSeconds = (DateTime.Now - flight.StartedAt).TotalSeconds,
+            ModelId = "nemotron-asr + local-llm",
+            Source = sourceLabel,
+        });
+        SetStateIfCurrent(flight, DictationStateMachine.Transition(DictationState.Inserting, evt) ?? DictationState.Done);
+
+        // Dual takes kept BOTH recordings until now; the transcripts are in
+        // the row, so the secondary system file can go on success (retention
+        // only tracks AudioPath — leaving it would leak the folder).
+        if (status == SessionStatus.Inserted && sys is not null && mic is not null
+            && sys.WavPath != wavPath)
+        {
+            try { File.Delete(sys.WavPath); }
+            catch { /* retention-safe: folder is pruned when mic audio ages out */ }
+        }
+
+        // The reveal: only when insertion succeeded AND cleanup actually removed
+        // something. Punctuation/casing-only changes show no reveal — the diff
+        // marks them as kept by design (they are what cleanup ADDS).
+        if (CorrectionReady is not null && flight.SessionId == _sessionId &&
+            status == SessionStatus.Inserted &&
+            _settings.CleanupEnabled && !string.Equals(cleaned, raw, StringComparison.Ordinal))
+        {
+            var cuts = TranscriptDiff.Segments(raw, cleaned).Count(s => s.IsCut);
+            if (cuts > 0)
+                CorrectionReady?.Invoke(raw, cleaned);
+        }
     }
 
     /// <summary>Keep the mic open past key-up until the user is quiet for
@@ -410,17 +797,23 @@ public sealed class DictationCoordinator : IDisposable
         }
     }
 
-    private async Task RunPipelineAsync(FlightContext flight, string? wavPath, string? streamedRaw = null)
+    /// <summary>Transcribe + clean ONE source. Returns the half-result for the
+    /// composer; insertion belongs to InsertCombinedAsync. Silence and cancel
+    /// are reported as null — never as errors.</summary>
+    private async Task<PipelineResult?> RunSourcePipelineAsync(
+        FlightContext flight, string? wavPath, string? streamedRaw, bool system)
     {
         if (wavPath is null || !File.Exists(wavPath))
         {
-            FailFlight(flight, DictationFailure.NoAudio, "no audio file was written");
-            return;
+            // One dead half must not fail the session: the other half may still
+            // have the words. The orchestrator composes whatever survives.
+            FileLog.Write($"{(system ? "system" : "mic")} half has no audio file — composing without it");
+            return null;
         }
 
-        // Esc'd mid-processing: stop before spending cleanup/insertion work.
-        // The row goes Cancelled with its audio kept — consistent with a
-        // recording-phase cancel (the words were wanted once, then refused).
+        // Esc'd mid-processing: stop before spending cleanup work. The row
+        // goes Cancelled with its audio kept — consistent with a recording-
+        // phase cancel (the words were wanted once, then refused).
         if (_cancelRequested.TryRemove(flight.SessionId, out _))
         {
             var cancelledDur = WavRecorder.DurationOf(wavPath);
@@ -429,9 +822,10 @@ public sealed class DictationCoordinator : IDisposable
                 Id = flight.SessionId, StartedAt = flight.StartedAt,
                 Status = SessionStatus.Cancelled, AudioPath = wavPath,
                 AudioDurationSeconds = cancelledDur.TotalSeconds, TargetAppName = flight.TargetApp,
+                Source = system ? "system" : "mic",
             });
             SetStateIfCurrent(flight, DictationState.Cancelled);
-            return;
+            return null;
         }
 
         var duration = WavRecorder.DurationOf(wavPath);
@@ -447,8 +841,9 @@ public sealed class DictationCoordinator : IDisposable
                 Status = SessionStatus.Silent, AudioPath = wavPath,
                 AudioDurationSeconds = duration.TotalSeconds,
                 TargetAppName = flight.TargetApp,
+                Source = system ? "system" : "mic",
             });
-            return;
+            return null;
         }
 
         _history.Upsert(new DictationRecord
@@ -456,6 +851,7 @@ public sealed class DictationCoordinator : IDisposable
             Id = flight.SessionId, StartedAt = flight.StartedAt,
             Status = SessionStatus.Transcribing, AudioPath = wavPath,
             AudioDurationSeconds = duration.TotalSeconds, TargetAppName = flight.TargetApp,
+            Source = system ? "system" : "mic",
         });
 
         // The stream produced a transcript AND policy says the stream is the
@@ -490,8 +886,7 @@ public sealed class DictationCoordinator : IDisposable
                     _log($"cross-check skipped, keeping stream text: {ex.Message}");
                 }
             }
-            await FinishWithTranscriptAsync(flight, wavPath, duration, final);
-            return;
+            return await CleanSourceAsync(flight, wavPath, duration, final, system);
         }
 
         string raw;
@@ -502,16 +897,17 @@ public sealed class DictationCoordinator : IDisposable
         }
         catch (Exception ex)
         {
-            await HandleTranscribeFailureAsync(flight, wavPath, duration, Classify(ex), ex.Message);
-            return;
+            await HandleTranscribeFailureAsync(flight, wavPath, duration, Classify(ex), ex.Message, system);
+            return null;
         }
 
-        await FinishWithTranscriptAsync(flight, wavPath, duration, raw);
+        return await CleanSourceAsync(flight, wavPath, duration, raw, system);
     }
 
-    /// <summary>Shared tail: honest-silence check → cleanup → insertion.</summary>
-    private async Task FinishWithTranscriptAsync(
-        FlightContext flight, string wavPath, TimeSpan duration, string raw)
+    /// <summary>Per-source cleanup (honest-silence check included) — the
+    /// transcribe+clean tail. Returns the half-result; no insertion here.</summary>
+    private async Task<PipelineResult?> CleanSourceAsync(
+        FlightContext flight, string wavPath, TimeSpan duration, string raw, bool system)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -525,22 +921,12 @@ public sealed class DictationCoordinator : IDisposable
                 AudioDurationSeconds = duration.TotalSeconds,
                 TargetAppName = flight.TargetApp,
                 RawTranscript = null, CleanedTranscript = null,
+                Source = system ? "system" : "mic",
             });
             Recovered?.Invoke("Nothing heard — recording kept in History.");
-            return;
+            return null;
         }
 
-        var noise = flight.Noise;
-        await CleanAndInsertAsync(
-            flight, wavPath, duration, raw,
-            (float)(noise.FloorDB ?? 0), (float)noise.PeakDB, (float)(noise.MeasuredSNR ?? 0));
-    }
-
-    /// <summary>Shared tail: cleanup → gate → history row → insertion.</summary>
-    private async Task CleanAndInsertAsync(
-        FlightContext flight, string wavPath, TimeSpan duration,
-        string raw, float floorDB, float peakDB, float snr)
-    {
         var cleaned = raw;
         if (_settings.CleanupEnabled)
         {
@@ -569,70 +955,12 @@ public sealed class DictationCoordinator : IDisposable
             _log("cleanup: disabled in Settings → General — inserting raw ASR text");
         }
 
-        _history.Upsert(new DictationRecord
-        {
-            Id = flight.SessionId, StartedAt = flight.StartedAt,
-            Status = SessionStatus.Recorded, AudioPath = wavPath,
-            RawTranscript = raw, CleanedTranscript = cleaned,
-            AudioDurationSeconds = duration.TotalSeconds,
-            ModelId = "nemotron-asr + local-llm",
-        });
-
-        // Esc'd between cleanup and insertion: the words were transcribed and
-        // polished, but the user refused them — no insertion, no reveal. The
-        // row KEEPS the transcript (that's what happened) which also lets
-        // retention prune it like any other terminal row.
-        if (_cancelRequested.TryRemove(flight.SessionId, out _))
-        {
-            _history.Upsert(new DictationRecord
-            {
-                Id = flight.SessionId, StartedAt = flight.StartedAt,
-                Status = SessionStatus.Cancelled, AudioPath = wavPath,
-                RawTranscript = raw, CleanedTranscript = cleaned,
-                AudioDurationSeconds = duration.TotalSeconds,
-                TargetAppName = flight.TargetApp,
-            });
-            SetStateIfCurrent(flight, DictationState.Cancelled);
-            return;
-        }
-
-        SetStateIfCurrent(flight, DictationState.Inserting);
-        var outcome = await _inserter.InsertAsync(cleaned, CancellationToken.None);
-        var (status, evt) = outcome switch
-        {
-            InsertionOutcome.Inserted => (SessionStatus.Inserted, DictationEvent.Inserted),
-            InsertionOutcome.FellBackToClipboard => (SessionStatus.CopiedToClipboard, DictationEvent.InsertionFellBackToClipboard),
-            InsertionOutcome.BlockedSecure => (SessionStatus.HeldSecure, DictationEvent.InsertionBlockedSecure),
-            _ => (SessionStatus.Failed, DictationEvent.TranscriptFailed),
-        };
-        _history.Upsert(new DictationRecord
-        {
-            Id = flight.SessionId, StartedAt = flight.StartedAt, Status = status,
-            AudioPath = wavPath, RawTranscript = raw, CleanedTranscript = cleaned,
-            AudioDurationSeconds = duration.TotalSeconds,
-            PipelineSeconds = (DateTime.Now - flight.StartedAt).TotalSeconds,
-            ModelId = "nemotron-asr + local-llm",
-        });
-        SetStateIfCurrent(flight, DictationStateMachine.Transition(DictationState.Inserting, evt) ?? DictationState.Done);
-
-        // The reveal: only when insertion succeeded AND cleanup actually removed
-        // something. Punctuation/casing-only changes show no reveal — the diff
-        // marks them as kept by design (they are what cleanup ADDS).
-        // Superseded-flight guard, same as SetStateIfCurrent: a slow session
-        // finishing after a new dictation began must not paint its stale edit
-        // over the new session's live partials.
-        if (CorrectionReady is not null && flight.SessionId == _sessionId &&
-            status == SessionStatus.Inserted &&
-            _settings.CleanupEnabled && !ReferenceEquals(cleaned, raw))
-        {
-            var cuts = TranscriptDiff.Segments(raw, cleaned).Count(s => s.IsCut);
-            if (cuts > 0)
-                CorrectionReady?.Invoke(raw, cleaned);
-        }
+        return new PipelineResult(raw, cleaned, wavPath, duration);
     }
 
     private async Task HandleTranscribeFailureAsync(
-        FlightContext flight, string wavPath, TimeSpan duration, DictationFailure failure, string message)
+        FlightContext flight, string wavPath, TimeSpan duration, DictationFailure failure,
+        string message, bool system)
     {
         FileLog.Write($"transcription failed ({failure}): {message}");
         var autoRetryable = RetryPolicy.DecisionFor(failure, 0) != RetryDecision.NotRetryable;
@@ -642,6 +970,7 @@ public sealed class DictationCoordinator : IDisposable
             record.Status = autoRetryable ? SessionStatus.QueuedForRetry : SessionStatus.Failed;
             record.ErrorCode = failure.ToString();
             record.ErrorMessage = message;
+            record.Source = system ? "system" : "mic";
             _history.Upsert(record);
         }
 
@@ -736,8 +1065,30 @@ public sealed class DictationCoordinator : IDisposable
         SetState(DictationState.Cancelled);
         var recorder = _recorder;
         var stream = _stream;
+        var systemRecorder = _systemRecorder;
+        var systemStream = _systemStream;
         _recorder = null;
         _stream = null;
+        _systemRecorder = null;
+        _systemStream = null;
+        if (systemStream is not null)
+        {
+            _ = Task.Run(async () =>
+            {
+                await systemStream.CancelAsync();
+                await systemStream.DisposeAsync();
+            });
+        }
+        if (systemRecorder is not null)
+        {
+            var sysSid = _sessionId;
+            var sysDiscard = discardArtifacts;
+            _ = Task.Run(async () =>
+            {
+                try { await systemRecorder.StopAsync(); } catch { /* cancelling */ }
+                if (sysDiscard) { try { Directory.Delete(SessionFolder(sysSid), true); } catch { } }
+            });
+        }
         if (stream is not null)
         {
             // Discard buffered audio server-side (input_audio_buffer.clear),
@@ -792,6 +1143,7 @@ public sealed class DictationCoordinator : IDisposable
             // invisible to retention. A discarded tap session references nothing.
             AudioPath = discardArtifacts ? null : recorder?.CurrentPath,
             TargetAppName = _targetApp,
+            Source = systemRecorder is not null ? (recorder is not null ? "mic+system" : "system") : "mic",
         });
     }
 
@@ -910,5 +1262,6 @@ public sealed class DictationCoordinator : IDisposable
     {
         _inFlight?.Wait(TimeSpan.FromSeconds(2));
         _recorder?.Dispose();
+        _systemRecorder?.Dispose();
     }
 }
