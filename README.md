@@ -21,13 +21,21 @@ no account. Your voice never touches the network.
 Hold `` ` ``, say the thing, let go. A moment later your words are in the app you
 were already using — punctuated, filler words removed, self-corrections applied.
 While you speak, your words appear **live** inside a small pill at the bottom of
-the screen, streamed from the ASR model in real time.
+the screen, streamed from the ASR model in real time — above a waveform that
+dances with the audio for as long as it flows.
+
+And it isn't just your voice: with **system audio capture** on, Athena also
+transcribes whatever the computer itself is playing — the Zoom/Meet call, the
+YouTube video, the Spotify podcast, game chatter — through WASAPI loopback, no
+microphone involved. Your words and the meeting's words stream in two separate
+lanes of the pill, and both land at your cursor.
 
 ```
 hold ` ─▶ mic capture (WAV on disk from the first millisecond)
-        └─▶ live PCM16 stream ─▶ Nemotron ASR ─▶ partial words in the pill, live
-key up ─▶ full decode of the recording ─▶ LLM cleanup ─▶ validation gate
-        ─▶ your words pasted at the cursor
+      │   └─▶ live PCM16 stream ─▶ Nemotron ASR ─▶ MIC lane in the pill, live
+      └─▶ system audio loopback ─▶ second live stream ─▶ SYSTEM lane, live
+key up ─▶ full decode of the recording(s) ─▶ LLM cleanup ─▶ validation gate
+        ─▶ your words pasted at the cursor (system text after a blank line)
 ```
 
 It follows a change of mind: say *"let's meet at 1pm — actually, no, make it
@@ -44,7 +52,7 @@ teleport.
 | **.NET** | .NET SDK 10.0 (build) — the app itself targets `net10.0-windows` |
 | **ASR server** | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) serving `nemotron-3.5-asr-streaming-0.6b` on `http://127.0.0.1:8080` |
 | **LLM server** | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` on `http://127.0.0.1:3000` (any OpenAI-compatible chat server works; reasoning models supported) |
-| **Mic** | Any input device — capture runs in the device's native format |
+| **Audio** | Mic: any input device, captured in its native format. System audio: the default output device (WASAPI loopback) |
 
 Both servers are expected to already be running (the port was built against a
 local setup; it never downloads models). Everything is localhost-only.
@@ -81,8 +89,8 @@ win-x64 build (no .NET runtime needed on the target machine) and compiles
 and offers desktop / start-at-login shortcuts. User data (history DB, session
 audio, logs, `settings.json`) survives uninstall and upgrades.
 
-Run the tests (146 tests: pure-logic suites plus live integration tests that
-auto-skip when the local servers are down):
+Run the tests (160 tests: pure-logic suites, WPF layout regression tests, plus
+live integration tests that auto-skip when the local servers are down):
 
 ```powershell
 dotnet test Athena.sln
@@ -94,8 +102,13 @@ dotnet test Athena.sln
 | --- | --- |
 | **Hold the dictation key** | Records while held — live text streams into the pill. Release and the text lands at your cursor. |
 | **Key + tap `Space`** | Hands-free: keeps recording after you let go. Tap the key to finish. |
+| **Tap the key, then `Space`** (within ½s) | **System-audio-only take**: the meeting/video/podcast is transcribed while your mic stays off. Tap the key again to finish and paste. |
 | **`Esc`** | Cancels; buffered audio is discarded server-side. |
 | **Ctrl/Alt/Win + key** | Passes through to apps untouched — only the bare key belongs to Athena. |
+
+The Space gestures need **Capture system audio** on (Settings → General): hold +
+Space locks in hands-free with both sources; tap + Space latches the loopback
+alone. With the toggle off, the gestures stay out of your way.
 
 The key is any lone key of your choice — rebind it in **Settings → General →
 Dictation key** (persisted as `HotkeyVk` in `settings.json`, e.g. `0xC0` =
@@ -114,12 +127,14 @@ without losing words:
    exactly where first words used to be lost.
 2. **Live streaming ASR** — the mic's native-rate PCM streams over the server's
    realtime WebSocket (`/v1/audio/transcriptions/realtime`, deltas framed at
-   100 ms, wire order = capture order via a single FIFO sender). Partial words
+   100 ms, wire order = capture order via a single FIFO sender; with system
+   audio on, the loopback runs its own independent second stream). Partial words
    render in the pill as you speak, with the server's own spacing preserved.
    The stream is **display-first**: it shows you your words while the recording
    is still being made.
-3. **The whole-utterance decode** — at key-up, the on-disk WAV goes to the file
-   endpoint (`POST /v1/audio/transcriptions`) and *that* transcript is what
+3. **The whole-utterance decode** — at key-up, each on-disk WAV (the mic's, and
+   the system capture when present) goes to the file endpoint
+   (`POST /v1/audio/transcriptions`) and *that* transcript is what
    gets inserted. In local testing the file decode of a session was always
    complete while realtime streams occasionally dropped words, so the file is
    the record and the stream is the preview. (You can flip this: **Use the
@@ -153,10 +168,23 @@ kept, audio dropped) after the retention window you set.
 ## Features
 
 - **The three-beat HUD pill** — while speaking, the pill itself shows
-  `ATHENA WRITES` with your words appearing live; if cleanup finds cuts, it
-  flips to `YOU SAID` with your raw wording, the cuts strike through in red and
-  collapse, settling on the fixed sentence that gets pasted. Never steals
-  focus, click-through, scrollable for long dictations.
+  `ATHENA WRITES` with your words appearing live, the waveform dancing
+  underneath for as long as audio flows (text above, animation below — the
+  wave never stops while you speak, through processing, until the paste); if
+  cleanup finds cuts, the pill flips to `YOU SAID` with your raw wording, the
+  cuts strike through in red and collapse, settling on the fixed sentence
+  that gets pasted. Never steals focus, click-through, scrollable for long
+  dictations.
+- **System-audio dictation (WASAPI loopback)** — with **Capture system audio**
+  on, a hold records *both* sources at once: your mic and everything the
+  computer is playing (calls, YouTube, Spotify, games — the default output
+  device). Each source streams through its own realtime ASR session, the pill
+  shows two labeled lanes side by side (`SYSTEM` left, `MIC` right) over the
+  shared waveform, and the pasted result is your words, then a blank line,
+  then the computer's. A tap+Space latch takes the loopback alone with the
+  mic off. If loopback can't open (no output endpoint), the take degrades to
+  mic-only instead of failing, and a loopback failure mid-take never kills
+  your dictation.
 - **19 languages + auto-detect** — all of Nemotron 3.5's transcription-ready
   locales (English US/UK, Spanish ×2, French ×2, Italian, Portuguese ×2, Dutch,
   German, Turkish, Russian, Arabic, Hindi, Japanese, Korean, Vietnamese,
@@ -206,6 +234,7 @@ toggle):
   "LlmModel": null,              // blank = server default
   "Language": "en-US",           // or "auto", "de-DE", "hi-IN", ...
   "StreamingEnabled": true,      // live partial words in the pill
+  "SystemAudioEnabled": false,   // capture what the PC is playing alongside the mic
   "FileFallbackEnabled": false,  // true = insert the stream's final (lower latency)
   "CrossCheckAsr": true,         // fix the stream's first word vs the recording
   "CleanupEnabled": true,        // false = raw ASR output, no LLM
@@ -241,13 +270,14 @@ src/
   Athena.App/             the Windows shell
     DictationCoordinator.cs    orchestrates a dictation flight end-to-end
     Audio/WavRecorder.cs       WASAPI capture + live PCM16 tap + transcode
+    Audio/SystemAudioRecorder.cs  WASAPI loopback capture (the meeting's side)
     Audio/WarmRecorderPool.cs  prewarmed capture graphs (key-down pays ~0)
     Interop/KeyboardHook.cs    WH_KEYBOARD_LL push-to-talk hook
     Interop/SendInputInserter.cs  the Ctrl+V insertion ladder
     Hud/HudPillWindow.cs       the non-activating pill: live text + edit reveal
     Sound/EarconPlayer.cs      synthesized earcons
     Windows/                   tray, main, Settings, History windows
-tests/                    146 tests: pure-logic suites + live integration tests
+tests/                    160 tests: pure-logic suites + live integration tests
 scripts/                  dev probes + icon generator (python, uv-run)
 docs/
   WINDOWS_PORT.md        port notes: what was mapped, what was trimmed
@@ -262,6 +292,7 @@ mac_stuff/               the original macOS app (Swift), untracked — reference
 | Key press does nothing | Is Athena in the tray? Is the target app elevated (UIPI blocks synthetic input into admin windows)? Does the key still type its own character — meaning another app owns a lower-level hook? |
 | Live words never appear | Is **Show words while I'm speaking** on (Settings → General)? Is the ASR server up? The title-bar dot answers that at a glance (red = a server is down); the log shows `realtime connect failed` when the endpoint is missing — dictation still works, just without the live preview |
 | Inserted text has wrong/cut words | The file decode owns the final by default; if you enabled **Use the stream for the final text**, try turning it off (the stream trades some accuracy for latency) |
+| No system-audio text (mic works) | Is **Capture system audio** on (Settings → General)? Loopback follows the *default* output device — audio playing through a different output isn't captured. The log shows `loopback open failed` when there's no output endpoint |
 | Transcription fails | Server up? `curl http://127.0.0.1:8080/health` and `curl http://127.0.0.1:3000/health` |
 | App won't build | `dotnet --list-sdks` needs 10.x; kill any running `Athena.exe` first (file locks) |
 
