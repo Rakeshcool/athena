@@ -17,15 +17,17 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 {
     private readonly AthenaSettings _settings;
     private readonly DictionaryStore _dictionary;
+    private readonly AppProfileStore _profiles;
     private readonly Action _settingsChanged;
     private readonly Interop.KeyboardHook? _hook;
 
     public SettingsWindow(AthenaSettings settings, DictionaryStore dictionary, Action settingsChanged,
-        Interop.KeyboardHook? hook = null)
+        Interop.KeyboardHook? hook = null, AppProfileStore? profiles = null)
     {
         InitializeComponent();
         _settings = settings;
         _dictionary = dictionary;
+        _profiles = profiles ?? AppProfileStore.Load();
         _settingsChanged = settingsChanged;
         _hook = hook;
         Load();
@@ -42,6 +44,17 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         // Implicit save, live: every control persists on change (the close-save
         // remains as a backstop). Each save flashes the "saved" tick.
         LanguageBox.SelectionChanged += (_, _) => Save();
+        // Tone picker for the Profiles add-row: first item = inherit (null tag).
+        NewProfileTone.ItemsSource = new[]
+        {
+            new ComboBoxItem { Content = "(inherit app default)", Tag = null },
+            new ComboBoxItem { Content = "Email", Tag = ToneCategory.Email },
+            new ComboBoxItem { Content = "Work chat", Tag = ToneCategory.WorkChat },
+            new ComboBoxItem { Content = "Personal chat", Tag = ToneCategory.PersonalChat },
+            new ComboBoxItem { Content = "Code", Tag = ToneCategory.Code },
+            new ComboBoxItem { Content = "Neutral", Tag = ToneCategory.Neutral },
+        };
+        NewProfileTone.SelectedIndex = 0;
         foreach (var toggle in new[] { CleanupToggle, SoundsToggle, StreamingToggle, FileFallbackToggle, CrossCheckToggle, SystemAudioToggle, LaunchAtLoginToggle, WarmAccentToggle })
         {
             toggle.Checked += (_, _) => Save();
@@ -51,14 +64,15 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         Closed += (_, _) => Save();
     }
 
-    /// <summary>Pill-tab bar drives four content panels; the TabControl's own
+    /// <summary>Pill-tab bar drives five content panels; the TabControl's own
     /// content is never used.</summary>
     private void ShowPage()
     {
         GeneralPage.Visibility = PillTabs.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         ServersPage.Visibility = PillTabs.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         DictionaryPage.Visibility = PillTabs.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
-        AboutPage.Visibility = PillTabs.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        ProfilesPage.Visibility = PillTabs.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        AboutPage.Visibility = PillTabs.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>Implicit save stays, but it's no longer silent: a brief
@@ -140,6 +154,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         WarmAccentToggle.IsChecked = _settings.WarmAccent;
         SystemAudioToggle.IsChecked = _settings.SystemAudioEnabled;
         RefreshDict();
+        RefreshProfiles();
     }
 
     private void Save()
@@ -239,6 +254,70 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         var dlg = new Microsoft.Win32.SaveFileDialog { FileName = "athena-dictionary.csv", Filter = "CSV files|*.csv" };
         if (dlg.ShowDialog() != true) return;
         File.WriteAllText(dlg.FileName, _dictionary.ExportCsv());
+    }
+
+    // --- Profiles tab -----------------------------------------------------
+
+    private sealed record ProfileRow(string Name, string Tone, string Cleanup, string Language);
+
+    private void RefreshProfiles()
+    {
+        ProfileList.ItemsSource = _profiles.Snapshot()
+            .Select(p => new ProfileRow(
+                p.ProcessName,
+                p.Tone?.ToString() ?? "(auto)",
+                p.SkipCleanup ? "skipped" : "on",
+                string.IsNullOrWhiteSpace(p.Language) ? "(global)" : p.Language))
+            .ToList();
+    }
+
+    private void OnAddProfile(object sender, RoutedEventArgs e)
+    {
+        var name = NewProfileBox.Text.Trim();
+        if (name.Length == 0) return;
+        // Unknown codes would ride both the stream config and the file request
+        // raw — reject at the UI rather than let the app silently transcribe
+        // that app with no language hint (the global catalog's doctrine:
+        // IsSupported is advisory, the server owns the final say).
+        var language = NewProfileLanguage.Text.Trim();
+        if (language.Length > 0 && !Athena.Core.LanguageCatalog.IsSupported(language))
+        {
+            MessageBox.Show(this,
+                $"'{language}' is not a language the ASR server supports. " +
+                "Leave the field empty to follow the global setting, or pick a code like en-US, hi-IN.",
+                "Athena");
+            return;
+        }
+        // The add row edits ONE new profile: tone defaults to inherit (auto),
+        // language empty = follow global. Editing existing rows means select →
+        // remove → re-add, same model as the dictionary — good enough for a
+        // five-field table and keeps implicit-save semantics simple.
+        var profile = new AppProfile
+        {
+            ProcessName = name,
+            Tone = (NewProfileTone.SelectedItem as ComboBoxItem)?.Tag as ToneCategory?,
+            SkipCleanup = NewProfileSkip.IsChecked == true,
+            Language = language,
+        };
+        var all = _profiles.Snapshot().Where(p =>
+            !string.Equals(p.ProcessName.Trim(), name, StringComparison.OrdinalIgnoreCase));
+        _profiles.SaveAll(all.Append(profile));
+        NewProfileBox.Clear();
+        NewProfileLanguage.Clear();
+        NewProfileSkip.IsChecked = false;
+        NewProfileTone.SelectedIndex = 0; // back to "(inherit app default)"
+        RefreshProfiles();
+        ConfirmSaved();
+    }
+
+    private void OnRemoveProfile(object sender, RoutedEventArgs e)
+    {
+        if (ProfileList.SelectedItem is not ProfileRow row) return;
+        var remaining = _profiles.Snapshot().Where(p =>
+            !string.Equals(p.ProcessName.Trim(), row.Name, StringComparison.OrdinalIgnoreCase));
+        _profiles.SaveAll(remaining);
+        RefreshProfiles();
+        ConfirmSaved();
     }
 
     private async void OnTestServers(object sender, RoutedEventArgs e)

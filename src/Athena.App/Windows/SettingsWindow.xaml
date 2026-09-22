@@ -116,6 +116,7 @@
                 <TabItem Style="{StaticResource PillTab}" Header="General"/>
                 <TabItem Style="{StaticResource PillTab}" Header="Servers"/>
                 <TabItem Style="{StaticResource PillTab}" Header="Dictionary"/>
+                <TabItem Style="{StaticResource PillTab}" Header="Profiles"/>
                 <TabItem Style="{StaticResource PillTab}" Header="About"/>
             </TabControl>
 
@@ -303,6 +304,60 @@
                     <ui:Button Content="Remove selected" Click="OnRemoveSelected" Padding="10,4"/>
                     <ui:Button Content="Import CSV…" Click="OnImportCsv" Padding="10,4" Margin="8,0,0,0"/>
                     <ui:Button Content="Export CSV…" Click="OnExportCsv" Padding="10,4" Margin="8,0,0,0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Profiles: per-app tone/language/cleanup overrides, keyed by
+                 process name. Editor mirrors the Dictionary page: inline add
+                 row, flat ListView, remove-selected. -->
+            <Grid x:Name="ProfilesPage" Visibility="Collapsed" Margin="0,4,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <!-- Auto, not *: star rows collapse inside the page
+                         ScrollViewer (infinite measure height) — same trap
+                         the Dictionary list hit. -->
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Style="{StaticResource HelpText}"
+                           Text="Per-app overrides, matched by process name (no .exe). Tone steers how the model writes; a language forces transcription for that app; skip cleanup inserts raw ASR text — right for terminals and IDEs."/>
+                <Grid Grid.Row="1" Margin="0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="120"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="NewProfileBox" Grid.Column="0" Margin="0,0,4,0"
+                                PlaceholderText="Process name, e.g. code"/>
+                    <ComboBox x:Name="NewProfileTone" Grid.Column="1" Margin="0,0,4,0"/>
+                    <!-- ToggleSwitch, not a stock CheckBox: stock checkbox chrome
+                         ignores the dark theme (the white-control defect the
+                         Dictionary tab's design already avoids). -->
+                    <ui:ToggleSwitch x:Name="NewProfileSkip" Grid.Column="2" Content="Skip cleanup"
+                              VerticalAlignment="Center" Margin="4,0,8,0"/>
+                    <ui:TextBox x:Name="NewProfileLanguage" Grid.Column="3" Margin="0,0,4,0"
+                                PlaceholderText="en-US"/>
+                    <ui:Button x:Name="AddProfileButton" Grid.Column="4" Content="Add profile"
+                               Click="OnAddProfile" Padding="10,4"/>
+                </Grid>
+                <ListView x:Name="ProfileList" Grid.Row="2" FontSize="12"
+                          Background="Transparent" BorderThickness="0"
+                          MaxHeight="240"
+                          ItemContainerStyle="{StaticResource DictRow}">
+                    <ListView.View>
+                        <GridView ColumnHeaderContainerStyle="{StaticResource DictHeader}">
+                            <GridViewColumn Header="App" Width="150" DisplayMemberBinding="{Binding Name}"/>
+                            <GridViewColumn Header="Tone" Width="120" DisplayMemberBinding="{Binding Tone}"/>
+                            <GridViewColumn Header="Cleanup" Width="80" DisplayMemberBinding="{Binding Cleanup}"/>
+                            <GridViewColumn Header="Language" Width="110" DisplayMemberBinding="{Binding Language}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+                    <ui:Button Content="Remove selected" Click="OnRemoveProfile" Padding="10,4"/>
                 </StackPanel>
             </Grid>
 

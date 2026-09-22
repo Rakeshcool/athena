@@ -26,6 +26,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private KeyboardHook? _hook;
     private HistoryStore? _history;
     private RetryQueueStore? _retryQueue;
+    private AppProfileStore? _profiles;
     private DictionaryStore? _dictionary;
     private HudPillWindow? _hud;
     private EarconPlayer? _earcons;
@@ -221,6 +222,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _history = new HistoryStore(Path.Combine(appData, "history.db"));
         _retryQueue = RetryQueueStore.Load();
         _dictionary = DictionaryStore.Load();
+        _profiles = AppProfileStore.Load();
 
         var http = new System.Net.Http.HttpClient();
         var asr = new LocalAsrClient(http, _settings.AsrBaseUrl, _settings.Language,
@@ -231,6 +233,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             },
             // Per-request language: a mid-run Settings change applies to the
             // file-fallback and retry paths immediately, not after a restart.
+            // App-profile language does NOT ride this provider — the coordinator
+            // passes it explicitly per call (flight.Profile / retry resolve),
+            // because an ambient session-scoped read would leak an overlapping
+            // take's profile into a previous take's fallback decode.
             languageProvider: () => _settings.Language);
         var llm = new LocalLlmClient(http, _settings.LlmBaseUrl, _settings.LlmModel);
         var pipeline = new FormattingPipeline(_dictionary, llm);
@@ -271,7 +277,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             retryQueue: _retryQueue,
             settings: _settings,
             log: m => FileLog.Write(m),
-            dictionary: _dictionary);
+            dictionary: _dictionary,
+            profiles: _profiles);
 
         _coordinator.StateChanged += s => Dispatcher.BeginInvoke(() => OnStateChanged(s));
         _coordinator.Level += l => Dispatcher.BeginInvoke(() => _hud?.OnLevel(l));
@@ -594,7 +601,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             win.Activate();
             return;
         }
-        _settingsWindow = new SettingsWindow(_settings, _dictionary!, OnSettingsChanged, _hook);
+        _settingsWindow = new SettingsWindow(_settings, _dictionary!, OnSettingsChanged, _hook, _profiles);
         // WPF windows are unusable once closed: Show() on a closed window
         // throws. Drop the reference on close so the next click builds fresh.
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;

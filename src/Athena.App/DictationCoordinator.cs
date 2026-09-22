@@ -44,7 +44,12 @@ public enum Intent
 /// null on a latched system-only take (the mic was never opened).</summary>
 internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string? TargetApp,
     WavRecorder? Recorder, RealtimeAsrClient? Stream, NoiseFloorEstimator Noise,
-    SystemAudioRecorder? SystemAudio = null, RealtimeAsrClient? SystemStream = null);
+    SystemAudioRecorder? SystemAudio = null, RealtimeAsrClient? SystemStream = null,
+    /// <summary>The target-app profile resolved at Begin time. Rides the flight
+    /// because the pipeline task can outlive the session: an overlapping take
+    /// re-resolves this field for ITS app, and a shared mutable field would
+    /// let take 2's profile leak into take 1's cleanup/decode. Null = inherit.
+    AppProfile? Profile = null);
 
 /// <summary>One source's transcribe+clean output. Insertion is deliberately
 /// NOT part of this: with two sources in flight, neither half may insert —
@@ -62,6 +67,7 @@ public sealed class DictationCoordinator : IDisposable
     private readonly RetryQueueStore _retryQueue;
     private readonly AthenaSettings _settings;
     private readonly DictionaryStore? _dictionary;
+    private readonly AppProfileStore? _profiles;
     private readonly Action<string> _log;
 
     private HotkeyProcessor _grammar;
@@ -131,7 +137,8 @@ public sealed class DictationCoordinator : IDisposable
         RetryQueueStore retryQueue,
         AthenaSettings settings,
         Action<string>? log = null,
-        DictionaryStore? dictionary = null)
+        DictionaryStore? dictionary = null,
+        AppProfileStore? profiles = null)
     {
         _clock = () => WavRecorder.Now;
         _recorderFactory = recorderFactory;
@@ -142,6 +149,7 @@ public sealed class DictationCoordinator : IDisposable
         _retryQueue = retryQueue;
         _settings = settings;
         _dictionary = dictionary;
+        _profiles = profiles;
         _log = log ?? (_ => { });
         _grammar = new HotkeyProcessor
         {
@@ -298,6 +306,7 @@ public sealed class DictationCoordinator : IDisposable
         _sessionId = Guid.NewGuid();
         _startedAt = DateTime.Now;
         _targetApp = Interop.Native.ForegroundProcessName();
+        ResolveProfile();
         _noise = new NoiseFloorEstimator();
         _latestLevel = 0;
         var sessionId = _sessionId;         // captured: handlers stay per-session
@@ -450,6 +459,22 @@ public sealed class DictationCoordinator : IDisposable
             sys.PcmChunk += chunk => _systemStream?.SendAudio(chunk);
     }
 
+    /// <summary>The profile for the CURRENT session's target app, resolved at
+    /// Begin/BeginSystem time (the foreground app can't change mid-take).
+    /// Null = no override; every consumer falls back to global settings.</summary>
+    private AppProfile? _sessionProfile;
+
+    /// <summary>Resolve the target-app profile once per session: tone, language
+    /// and skip-cleanup ride this take, not this app lifetime — a Settings edit
+    /// between takes applies immediately. The resolved profile rides the
+    /// FlightContext (not coordinator state) because a flight's pipeline can
+    /// outlive its session: an overlapping take re-resolves this field for ITS
+    /// app, and a shared mutable field would leak take 2's profile into take 1's
+    /// decode/cleanup. The streams capture the language at CreateStream time —
+    /// same reason.</summary>
+    private void ResolveProfile() =>
+        _sessionProfile = _profiles?.Resolve(_targetApp);
+
     /// <summary>Create + subscribe a realtime stream for one source. The
     /// superseded-session guard on PartialChanged is per-session (captured id);
     /// system partials ride their own event so the HUD can label the row.</summary>
@@ -457,10 +482,17 @@ public sealed class DictationCoordinator : IDisposable
     {
         var dict = _dictionary?.Snapshot();
         var phrases = dict is null ? null : dict.Terms.Select(t => t.Term).ToList();
+        // Profile language override: a per-app language rides BOTH sources of
+        // this take (mic and system) — the stream decides its first word with
+        // zero left context, so the wrong language costs the opening. Normalized
+        // like the file client does; the stream config is sent raw in session.update.
+        var language = _sessionProfile is { Language: { Length: > 0 } pl }
+            ? LanguageCatalog.Normalize(pl)
+            : _settings.Language;
         var stream = new RealtimeAsrClient(_settings.AsrBaseUrl, new RealtimeSessionConfig
         {
             SampleRate = sampleRate,
-            Language = _settings.Language,
+            Language = language,
             BoostPhrases = phrases is { Count: > 0 } ? phrases : null,
         });
         stream.PartialChanged += text =>
@@ -494,6 +526,7 @@ public sealed class DictationCoordinator : IDisposable
         _sessionId = Guid.NewGuid();
         _startedAt = DateTime.Now;
         _targetApp = Interop.Native.ForegroundProcessName();
+        ResolveProfile();
         var sessionId = _sessionId;
         SetState(DictationState.Warming);
 
@@ -583,7 +616,8 @@ public sealed class DictationCoordinator : IDisposable
         SetState(DictationState.Finalizing);
         var flight = new FlightContext(_sessionId, _startedAt, _targetApp,
             recorder, _stream, _noise,
-            SystemAudio: systemRecorder, SystemStream: systemStream);
+            SystemAudio: systemRecorder, SystemStream: systemStream,
+            Profile: _sessionProfile);
         _recorder = null;
         _stream = null;
         _systemRecorder = null;
@@ -949,7 +983,7 @@ public sealed class DictationCoordinator : IDisposable
                 try
                 {
                     using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
-                    var fromFile = await _transcriber.TranscribeAsync(wavPath, cts.Token);
+                    var fromFile = await _transcriber.TranscribeAsync(wavPath, cts.Token, flight.Profile?.Language);
                     var arbitrated = TranscriptArbiter.Pick(final, fromFile);
                     if (!string.Equals(arbitrated, final, StringComparison.Ordinal))
                         _log("cross-check: file decode corrected the stream opening");
@@ -967,7 +1001,7 @@ public sealed class DictationCoordinator : IDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
-            raw = await _transcriber.TranscribeAsync(wavPath, cts.Token);
+            raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, flight.Profile?.Language);
         }
         catch (Exception ex)
         {
@@ -1010,11 +1044,17 @@ public sealed class DictationCoordinator : IDisposable
         }
 
         var cleaned = raw;
-        if (_settings.CleanupEnabled)
+        // Profile skip wins FIRST: a terminal profile means raw ASR text inserts
+        // even with cleanup globally on — that's the point of the override.
+        if (flight.Profile is { SkipCleanup: true })
+        {
+            _log($"cleanup: skipped for '{flight.TargetApp}' (app profile)");
+        }
+        else if (_settings.CleanupEnabled)
         {
             try
             {
-                var tone = PromptV1.ToneForProcess(flight.TargetApp);
+                var tone = flight.Profile?.Tone ?? PromptV1.ToneForProcess(flight.TargetApp);
                 using var cts = new CancellationTokenSource(TimeoutPolicy.CleanupDeadline(duration));
                 cleaned = await _pipeline.ProcessAsync(raw, tone, ct: cts.Token);
                 // The cleanup toggle is invisible mid-dictation: say which path
@@ -1094,20 +1134,25 @@ public sealed class DictationCoordinator : IDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
-            var raw = await _transcriber.TranscribeAsync(wavPath, cts.Token);
+            var profile = _profiles?.Resolve(record.TargetAppName);
+            var raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, profile?.Language);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 Error?.Invoke("Retry: still no speech in that recording.");
                 return null;
             }
             var cleaned = raw;
-            if (_settings.CleanupEnabled)
+            if (profile is { SkipCleanup: true })
+            {
+                _log($"retry: cleanup skipped for '{record.TargetAppName}' (app profile)");
+            }
+            else if (_settings.CleanupEnabled)
             {
                 try
                 {
                     using var cts2 = new CancellationTokenSource(TimeoutPolicy.CleanupDeadline(duration));
                     cleaned = await _pipeline.ProcessAsync(
-                        raw, PromptV1.ToneForProcess(record.TargetAppName), ct: cts2.Token);
+                        raw, profile?.Tone ?? PromptV1.ToneForProcess(record.TargetAppName), ct: cts2.Token);
                 }
                 catch { cleaned = raw; }
             }

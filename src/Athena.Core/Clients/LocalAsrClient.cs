@@ -20,6 +20,13 @@ public sealed class AsrTranscriptionResult
 public interface ITranscriber
 {
     Task<string> TranscribeAsync(string wavPath, CancellationToken ct);
+
+    /// <summary>Transcribe with an explicit BCP-47 language override (per-app
+    /// profiles). Empty/null = the client's configured language. Default
+    /// interface method forwards to the 2-arg form so implementations and
+    /// test fakes that don't care about profiles keep compiling.</summary>
+    Task<string> TranscribeAsync(string wavPath, CancellationToken ct, string? language)
+        => TranscribeAsync(wavPath, ct);
 }
 
 public sealed class LocalAsrClient : ITranscriber
@@ -68,6 +75,9 @@ public sealed class LocalAsrClient : ITranscriber
     }
 
     public async Task<string> TranscribeAsync(string wavPath, CancellationToken ct)
+        => await TranscribeAsync(wavPath, ct, language: null);
+
+    public async Task<string> TranscribeAsync(string wavPath, CancellationToken ct, string? language)
     {
         await using var file = File.OpenRead(wavPath);
         using var content = new MultipartFormDataContent();
@@ -76,7 +86,11 @@ public sealed class LocalAsrClient : ITranscriber
         content.Add(fileContent, "file", Path.GetFileName(wavPath));
         // Whisper-compatible knobs the server ignores gracefully if unsupported.
         content.Add(new StringContent("json"), "response_format");
-        if (EffectiveLanguage is { } lang)
+        // Explicit per-call language (app profile) wins over the configured one.
+        var lang = string.IsNullOrWhiteSpace(language)
+            ? EffectiveLanguage
+            : LanguageCatalog.Normalize(language);
+        if (lang is not null)
             content.Add(new StringContent(lang), "language");
         if (BoostJson is { } boost)
             content.Add(new StringContent(boost), "speech_contexts");
