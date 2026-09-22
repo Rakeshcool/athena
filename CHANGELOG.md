@@ -12,6 +12,7 @@ The entries below cover the Windows application.
 ## [Unreleased]
 
 ### Added
+- **Per-app profiles** (Settings → Profiles): overrides keyed on the foreground process name. Each profile can force a cleanup tone (or inherit the built-in app map), skip the LLM cleanup pass entirely — right for terminals and IDEs — and/or force a transcription language for that app, applied to both the realtime stream and the file decode. Unknown apps are unaffected; retries re-resolve the profile from the history row's app name. Persisted atomically to `app-profiles.json`.
 - Global **Ctrl+Shift+S** shortcut that stops a live take and pastes the result. The chord is consumed only while a dictation session is active, so other apps' Ctrl+Shift+S bindings keep working; Esc continues to cancel and discard.
 - A clickable **stop chip** on the HUD pill for hands-off takes (hold-key Space lock and tap+Space system-audio latch). It is visible before the first words arrive, and its label follows the current (rebindable) key name.
 - Regression tests: the stop-shortcut chord matrix (exact match, Alt/Win exclusion, partial chords, key-repeat guard) and WPF HUD layout tests (lane visibility and geometry, steady pill height under animation, chip present before any text).
