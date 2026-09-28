@@ -49,12 +49,22 @@ internal sealed record FlightContext(Guid SessionId, DateTime StartedAt, string?
     /// because the pipeline task can outlive the session: an overlapping take
     /// re-resolves this field for ITS app, and a shared mutable field would
     /// let take 2's profile leak into take 1's cleanup/decode. Null = inherit.
-    AppProfile? Profile = null);
+    AppProfile? Profile = null,
+    /// <summary>WavRecorder.Now (seconds) at each stream's first recorded
+    /// sample. The shared time origin for the take: a lane's per-word ASR
+    /// timings are shifted by (its start clock − the earlier lane's clock) so
+    /// mic and system words interleave on ONE timeline.
+    double? MicStartClock = null, double? SystemStartClock = null);
 
 /// <summary>One source's transcribe+clean output. Insertion is deliberately
 /// NOT part of this: with two sources in flight, neither half may insert —
-/// the orchestrator composes both transcripts and inserts once.</summary>
-internal sealed record PipelineResult(string Raw, string Cleaned, string WavPath, TimeSpan Duration);
+/// the orchestrator composes both transcripts and inserts once. Timed is the
+/// verbose_json decode (words + timings) when the lane produced one; null on
+/// the plain-text path (stream final, timed decode failure, old client).
+/// Timed.Text always equals Raw — the timeline is an annotation, never a
+/// different transcript.</summary>
+internal sealed record PipelineResult(string Raw, string Cleaned, string WavPath, TimeSpan Duration,
+    TimedTranscript? Timed = null);
 
 public sealed class DictationCoordinator : IDisposable
 {
@@ -324,6 +334,7 @@ public sealed class DictationCoordinator : IDisposable
             _recorder = _recorderFactory();
             PrepareMicSide(_recorder, sessionId);
             _recorder.Start(path);
+            _micStartClock = WavRecorder.Now; // time origin for mic word timings
         }
         catch (Exception ex)
         {
@@ -354,6 +365,7 @@ public sealed class DictationCoordinator : IDisposable
                 _systemRecorder = sys;
                 PrepareSystemSide(sys, sessionId);
                 sys.Start(Path.Combine(SessionFolder(_sessionId), "system-capture.wav"));
+                _systemStartClock = WavRecorder.Now; // time origin for system word timings
             }
             catch (Exception ex)
             {
@@ -464,6 +476,13 @@ public sealed class DictationCoordinator : IDisposable
     /// Null = no override; every consumer falls back to global settings.</summary>
     private AppProfile? _sessionProfile;
 
+    /// <summary>WavRecorder.Now at the first recorded sample of each stream
+    /// (see FlightContext.MicStartClock) — the shared time origin that lets
+    /// both lanes' word timings sit on one timeline. Stamped in Begin /
+    /// BeginSystem right after Start, before the pipeline can read them.</summary>
+    private double _micStartClock;
+    private double _systemStartClock;
+
     /// <summary>Resolve the target-app profile once per session: tone, language
     /// and skip-cleanup ride this take, not this app lifetime — a Settings edit
     /// between takes applies immediately. The resolved profile rides the
@@ -539,6 +558,7 @@ public sealed class DictationCoordinator : IDisposable
             _systemRecorder = sys;
             PrepareSystemSide(sys, sessionId);
             sys.Start(Path.Combine(folder, "capture.wav"));
+            _systemStartClock = WavRecorder.Now; // loopback is the only lane on a latched take
         }
         catch (Exception ex)
         {
@@ -617,7 +637,9 @@ public sealed class DictationCoordinator : IDisposable
         var flight = new FlightContext(_sessionId, _startedAt, _targetApp,
             recorder, _stream, _noise,
             SystemAudio: systemRecorder, SystemStream: systemStream,
-            Profile: _sessionProfile);
+            Profile: _sessionProfile,
+            MicStartClock: _micStartClock > 0 ? _micStartClock : null,
+            SystemStartClock: _systemStartClock > 0 ? _systemStartClock : null);
         _recorder = null;
         _stream = null;
         _systemRecorder = null;
@@ -798,6 +820,52 @@ public sealed class DictationCoordinator : IDisposable
         var wavPath = mic?.WavPath ?? sys!.WavPath;
         var duration = mic?.Duration ?? sys!.Duration;
 
+        // Timestamped takes: shift each lane's words by its stream's start
+        // offset (WavRecorder.Now at first sample) so mic and system sit on
+        // ONE timeline, then store the composed, interleaved transcript as
+        // the row's timeline. Dual takes read "You: … / Them: …" in the order
+        // the meeting actually happened instead of mic-then-system; single-
+        // source takes keep their lane timeline verbatim (no shifting — the
+        // timeline is relative to its own recording's start).
+        string? composedTimeline = null;
+        if (mic?.Timed is { HasWords: true } micTimed || sys?.Timed is { HasWords: true } sysTimed)
+        {
+            TimedTranscript? shiftedMic = null, shiftedSys = null;
+            if (mic?.Timed is { HasWords: true } m && flight.MicStartClock is { } mc)
+            {
+                var origin = flight.SystemStartClock is { } sc && sc < mc ? sc : mc;
+                shiftedMic = TranscriptTimeline.Shift(m, mc - origin);
+            }
+            if (sys?.Timed is { HasWords: true } s && flight.SystemStartClock is { } sysC)
+            {
+                var origin = flight.MicStartClock is { } micC && micC < sysC ? micC : sysC;
+                shiftedSys = TranscriptTimeline.Shift(s, sysC - origin);
+            }
+            if (shiftedMic is not null && shiftedSys is not null)
+            {
+                // Both lanes timed: interleave chronologically. The inserted
+                // text upgrades from "mic, blank line, system" to "You:/Them:
+                // in real order"; a lane without words would already have
+                // composed through the plain path above.
+                var interleaved = TranscriptTimeline.ComposeInterleaved(shiftedMic, shiftedSys);
+                if (!string.IsNullOrWhiteSpace(interleaved))
+                {
+                    raw = interleaved;
+                    cleaned = interleaved;
+                }
+                composedTimeline = TranscriptTimeline.ToJson(new TimedTranscript(
+                    MultiSourceComposer.Compose(shiftedMic.Text, shiftedSys.Text),
+                    TranscriptTimeline.MergeWords(shiftedMic.Words, shiftedSys.Words)));
+            }
+            else
+            {
+                // One timed lane (single-source take, or the other side
+                // silent/failed): store it as-is, insertion unchanged.
+                var only = shiftedMic ?? shiftedSys!;
+                composedTimeline = TranscriptTimeline.ToJson(only);
+            }
+        }
+
         _history.Upsert(new DictationRecord
         {
             Id = flight.SessionId, StartedAt = flight.StartedAt,
@@ -806,6 +874,7 @@ public sealed class DictationCoordinator : IDisposable
             AudioDurationSeconds = duration.TotalSeconds,
             ModelId = "nemotron-asr + local-llm",
             Source = sourceLabel,
+            TimelineJson = composedTimeline,
         });
 
         // Esc'd between cleanup and insertion: the words were transcribed and
@@ -998,10 +1067,38 @@ public sealed class DictationCoordinator : IDisposable
         }
 
         string raw;
+        TimedTranscript? timed = null;
         try
         {
             using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
-            raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, flight.Profile?.Language);
+            // verbose_json: the same endpoint and multipart request with the
+            // server's richer response format — text identical, timings aside.
+            // A client without the timed method (or a decode that somehow
+            // fails ONLY here) falls back to the plain path; the words never
+            // depend on the timeline.
+            timed = await _transcriber.TranscribeTimedAsync(wavPath, cts.Token, flight.Profile?.Language);
+            raw = timed.Text;
+            if (!timed.HasWords) timed = null;
+        }
+        catch (Exception ex) when (ex is not TranscriptionException and not OperationCanceledException)
+        {
+            // The timed shape failed client-side (odd body, default interface
+            // method absence is not an exception but a fallback) — retry once
+            // via the plain-text endpoint rather than failing the take. Cancellations
+            // (the timeout deadline) must NOT take this fallback: the plain retry
+            // would start a fresh deadline and double the wait — they fail like
+            // they always did.
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
+                raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, flight.Profile?.Language);
+                timed = null;
+            }
+            catch (Exception ex2)
+            {
+                await HandleTranscribeFailureAsync(flight, wavPath, duration, Classify(ex2), ex2.Message, system);
+                return null;
+            }
         }
         catch (Exception ex)
         {
@@ -1009,13 +1106,14 @@ public sealed class DictationCoordinator : IDisposable
             return null;
         }
 
-        return await CleanSourceAsync(flight, wavPath, duration, raw, system);
+        return await CleanSourceAsync(flight, wavPath, duration, raw, system, timed);
     }
 
     /// <summary>Per-source cleanup (honest-silence check included) — the
     /// transcribe+clean tail. Returns the half-result; no insertion here.</summary>
     private async Task<PipelineResult?> CleanSourceAsync(
-        FlightContext flight, string wavPath, TimeSpan duration, string raw, bool system)
+        FlightContext flight, string wavPath, TimeSpan duration, string raw, bool system,
+        TimedTranscript? timed = null)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -1077,7 +1175,9 @@ public sealed class DictationCoordinator : IDisposable
             _log("cleanup: disabled in Settings → General — inserting raw ASR text");
         }
 
-        return new PipelineResult(raw, cleaned, wavPath, duration);
+        // The timeline rides the half-result; InsertCombinedAsync shifts it to
+        // the take-wide origin and stores the composed timeline on the row.
+        return new PipelineResult(raw, cleaned, wavPath, duration, timed);
     }
 
     private async Task HandleTranscribeFailureAsync(
@@ -1135,7 +1235,21 @@ public sealed class DictationCoordinator : IDisposable
         {
             using var cts = new CancellationTokenSource(TimeoutPolicy.OverallDeadline(duration));
             var profile = _profiles?.Resolve(record.TargetAppName);
-            var raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, profile?.Language);
+            // Timed retry: a failed take re-decodes with word timings so SRT
+            // / VTT export works on recovered rows too. Falls back to the
+            // plain path when the client has no timed method.
+            TimedTranscript timed;
+            string raw;
+            try
+            {
+                timed = await _transcriber.TranscribeTimedAsync(wavPath, cts.Token, profile?.Language);
+                raw = timed.Text;
+            }
+            catch (NotImplementedException)
+            {
+                timed = TimedTranscript.Empty;
+                raw = await _transcriber.TranscribeAsync(wavPath, cts.Token, profile?.Language);
+            }
             if (string.IsNullOrWhiteSpace(raw))
             {
                 Error?.Invoke("Retry: still no speech in that recording.");
@@ -1162,6 +1276,8 @@ public sealed class DictationCoordinator : IDisposable
             }
             record.RawTranscript = raw;
             record.CleanedTranscript = cleaned;
+            if (timed is { HasWords: true })
+                record.TimelineJson = TranscriptTimeline.ToJson(timed);
             // Copy BEFORE the row claims it: CopiedToClipboard must be true
             // when written. Callers copy the returned text as well — a no-op
             // re-copy of the same content that also covers the rare moment

@@ -42,6 +42,11 @@ public sealed class DictationRecord
     /// "mic+system" (both streams in one take, composed with a blank line).
     /// Null on rows from before the feature existed.</summary>
     public string? Source { get; set; }
+
+    /// <summary>Per-word ASR timings as JSON (TranscriptTimeline), when the
+    /// decode carried them. Kept OUT of the FTS index — search is text-only.
+    /// Null on untimed rows (plain dictation path, legacy rows).</summary>
+    public string? TimelineJson { get; set; }
 }
 
 public sealed class HistoryStore : IDisposable
@@ -88,17 +93,21 @@ public sealed class HistoryStore : IDisposable
             """;
         cmd.ExecuteNonQuery();
 
-        // Additive migration: the capture-source column (loopback era). SQLite
-        // ALTER TABLE ADD COLUMN is null-filling, so pre-feature rows read null.
-        try
+        // Additive migrations: the capture-source column (loopback era) and
+        // the per-word timeline JSON (timestamp era). SQLite ALTER TABLE ADD
+        // COLUMN is null-filling, so pre-feature rows read null.
+        foreach (var col in new[] { "source", "timeline" })
         {
-            using var addSource = _connection.CreateCommand();
-            addSource.CommandText = "ALTER TABLE dictations ADD COLUMN source TEXT";
-            addSource.ExecuteNonQuery();
-        }
-        catch (SqliteException)
-        {
-            // Column already exists — the only reason this fails.
+            try
+            {
+                using var addCol = _connection.CreateCommand();
+                addCol.CommandText = $"ALTER TABLE dictations ADD COLUMN {col} TEXT";
+                addCol.ExecuteNonQuery();
+            }
+            catch (SqliteException)
+            {
+                // Column already exists — the only reason this fails.
+            }
         }
     }
 
@@ -109,12 +118,13 @@ public sealed class HistoryStore : IDisposable
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
             INSERT INTO dictations (id, started_at, status, target_app_name, audio_duration_seconds,
-                audio_path, raw_transcript, cleaned_transcript, error_code, error_message, model_id, pipeline_seconds, source)
-            VALUES ($id, $started, $status, $app, $dur, $audio, $raw, $clean, $errc, $errm, $model, $pipe, $source)
+                audio_path, raw_transcript, cleaned_transcript, error_code, error_message, model_id, pipeline_seconds, source, timeline)
+            VALUES ($id, $started, $status, $app, $dur, $audio, $raw, $clean, $errc, $errm, $model, $pipe, $source, $timeline)
             ON CONFLICT(id) DO UPDATE SET
                 status=$status, target_app_name=$app, audio_duration_seconds=$dur, audio_path=$audio,
                 raw_transcript=$raw, cleaned_transcript=$clean, error_code=$errc, error_message=$errm,
-                model_id=$model, pipeline_seconds=$pipe, source=COALESCE($source, source);
+                model_id=$model, pipeline_seconds=$pipe, source=COALESCE($source, source),
+                timeline=COALESCE($timeline, timeline);
             INSERT INTO dictations_fts (id, raw_transcript, cleaned_transcript)
             SELECT $id, COALESCE($raw,''), COALESCE($clean,'')
             WHERE NOT EXISTS (SELECT 1 FROM dictations_fts WHERE id = $id);
@@ -134,6 +144,7 @@ public sealed class HistoryStore : IDisposable
         cmd.Parameters.AddWithValue("$model", (object?)r.ModelId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$pipe", (object?)r.PipelineSeconds ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$source", (object?)r.Source ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$timeline", (object?)r.TimelineJson ?? DBNull.Value);
         cmd.ExecuteNonQuery();
         }
     }
@@ -226,6 +237,7 @@ public sealed class HistoryStore : IDisposable
             ModelId = S("model_id"),
             PipelineSeconds = D("pipeline_seconds"),
             Source = r.IsDBNull(r.GetOrdinal("source")) ? null : S("source"),
+            TimelineJson = r.IsDBNull(r.GetOrdinal("timeline")) ? null : S("timeline"),
         };
     }
 

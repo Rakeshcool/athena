@@ -145,4 +145,49 @@ public class LiveServerSmokeTests
             if (wav is not null) File.Delete(wav);
         }
     }
+
+    /// <summary>The verbose_json path against the REAL server: same text as
+    /// the plain endpoint, plus per-word timings the exports are built from.
+    /// This pins the live contract feature_implement2.md told us to verify
+    /// before coding (response_format param, word shape, per-word timing).</summary>
+    [SkippableFact]
+    public async Task Asr_timed_decode_returns_words_and_identical_text()
+    {
+        Skip.IfNot(AsrUp(), "ASR server not running");
+        var wav = SynthesizeSpeech("Athena stores the word timings for subtitle exports.");
+        Assert.NotNull(wav);
+        try
+        {
+            using var http = new HttpClient();
+            var asr = new LocalAsrClient(http, "http://127.0.0.1:8080");
+            var timed = await asr.TranscribeTimedAsync(wav!, CancellationToken.None);
+            Assert.False(string.IsNullOrWhiteSpace(timed.Text));
+            Assert.True(timed.HasWords, "verbose_json must carry a words array");
+            Assert.True(timed.Words[0].End > timed.Words[0].Start, "word timings must be ordered start < end");
+            Assert.True(timed.DurationSeconds is > 0.5, "duration should be reported");
+
+            // The timeline is an ANNOTATION, never a different transcript.
+            var plain = await asr.TranscribeAsync(wav!, CancellationToken.None);
+            Assert.Equal(plain, timed.Text);
+
+            // The server echoes the detected locale — exports reproduce it.
+            Assert.False(string.IsNullOrWhiteSpace(timed.Language));
+            Assert.StartsWith("en", timed.Language);
+
+            // Round-trip through storage and export — the History path.
+            var srt = TranscriptTimeline.ToSrt(timed.Words);
+            Assert.Contains(" --> ", srt);
+            Assert.Contains(timed.Words[0].Word, srt);
+
+            // The two JSON exports re-serialize the stored shape verbatim.
+            var timedJson = TranscriptTimeline.ToTimestampedJson(timed);
+            Assert.Contains($"\"language\":\"{timed.Language}\"", timedJson);
+            Assert.Contains("\"task\":\"transcribe\"", timedJson);
+            Assert.Equal("{\"text\":\"" + plain + "\"}", TranscriptTimeline.ToPlainTextJson(timed));
+        }
+        finally
+        {
+            if (wav is not null) File.Delete(wav);
+        }
+    }
 }

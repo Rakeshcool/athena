@@ -74,6 +74,7 @@
                                     <TextBlock Style="{StaticResource Meta}" Text="{Binding Status}" Margin="10,0,0,0"/>
                                     <TextBlock Style="{StaticResource Meta}" Text="{Binding TargetAppName}" Margin="10,0,0,0"/>
                                     <TextBlock Style="{StaticResource Meta}" Text="{Binding DurationText}" Margin="10,0,0,0"/>
+                                    <TextBlock Style="{StaticResource Meta}" Text="{Binding TimelineText}" Margin="10,0,0,0"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -81,11 +82,20 @@
                 </ListBox.ItemTemplate>
             </ListBox>
 
-            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,0">
-                <ui:Button x:Name="PlayButton" Content="Play audio" Click="OnPlayAudio" Padding="12,6"/>
-                <ui:Button Content="Copy" Click="OnCopy" Padding="12,6" Margin="8,0,0,0"/>
-                <ui:Button Content="Retry" Click="OnRetry" Padding="12,6" Margin="8,0,0,0" Appearance="Primary"/>
-                <ui:Button Content="Delete" Click="OnDelete" Padding="12,6" Margin="8,0,0,0"/>
+            <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <ui:Button x:Name="PlayButton" Content="Play audio" Click="OnPlayAudio" Padding="12,6"/>
+                    <ui:Button Content="Copy" Click="OnCopy" Padding="12,6" Margin="8,0,0,0"/>
+                    <ui:Button Content="Retry" Click="OnRetry" Padding="12,6" Margin="8,0,0,0" Appearance="Primary"/>
+                    <ui:Button Content="Delete" Click="OnDelete" Padding="12,6" Margin="8,0,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Export:" VerticalAlignment="Center" Opacity="0.7"/>
+                    <ui:Button Content="SRT" Click="OnExport" Tag="srt" Padding="12,6" Margin="8,0,0,0"/>
+                    <ui:Button Content="WebVTT" Click="OnExport" Tag="vtt" Padding="12,6" Margin="8,0,0,0"/>
+                    <ui:Button Content="JSON" Click="OnExport" Tag="json" Padding="12,6" Margin="8,0,0,0"/>
+                    <ui:Button Content="Timed JSON" Click="OnExport" Tag="jsontimed" Padding="12,6" Margin="8,0,0,0"/>
+                </StackPanel>
             </StackPanel>
         </Grid>
     </Grid>

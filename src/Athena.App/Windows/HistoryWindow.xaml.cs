@@ -26,6 +26,12 @@ public sealed class HistoryRow
     public double? Duration { get; init; }
     public bool ShowRaw { get; set; }
 
+    /// <summary>True when the row stores per-word ASR timings (SRT/VTT export
+    /// and meeting interleaving work). The timeline column is only written
+    /// with words in it, so presence of the JSON is the marker.</summary>
+    public bool HasTimeline { get; init; }
+    public string TimelineText => HasTimeline ? "timed" : "";
+
     public string DisplayText => (ShowRaw ? Raw ?? Cleaned : Cleaned ?? Raw) ?? "(no transcript)";
     public string DurationText => Duration is { } d ? $"{d:0.0}s" : "";
 }
@@ -57,6 +63,7 @@ public partial class HistoryWindow : Wpf.Ui.Controls.FluentWindow
                 TargetAppName = r.TargetAppName, Cleaned = r.CleanedTranscript,
                 Raw = r.RawTranscript, AudioPath = r.AudioPath,
                 Duration = r.AudioDurationSeconds, ShowRaw = showRaw,
+                HasTimeline = !string.IsNullOrEmpty(r.TimelineJson),
             })
             .ToList();
         HistoryList.ItemsSource = rows;
@@ -125,5 +132,73 @@ public partial class HistoryWindow : Wpf.Ui.Controls.FluentWindow
         }
         _history.Delete(row.Id);
         Refresh();
+    }
+
+    /// <summary>Export the selected take in one of the ASR server's own
+    /// response formats: SRT / WebVTT subtitles, plain JSON ({"text": …}) and
+    /// JSON with timestamps (duration/language/task/text/words — verified
+    /// against the server's dropdown). Everything is re-serialized from the
+    /// per-word timings stored on the row; no re-transcription, no custom
+    /// alignment. Rows from before the feature (or the stream-final path)
+    /// carry no timings — the timed formats say so instead of writing an
+    /// empty file; plain JSON works on any row.</summary>
+    private void OnExport(object sender, RoutedEventArgs e)
+    {
+        if (Selected is not { } row) return;
+        var format = sender is System.Windows.Controls.Button { Tag: { } tag } ? tag.ToString() : "srt";
+        var timed = TranscriptTimeline.FromJson(_history.Get(row.Id)?.TimelineJson);
+
+        if (format != "json" && !timed.HasWords)
+        {
+            SearchBox.PlaceholderText = "No word timings on that take — Retry re-decodes it with timestamps.";
+            return;
+        }
+
+        string content, ext, filter, suffix = "";
+        switch (format)
+        {
+            case "json":
+                // Server-faithful {"text": …}: the raw transcript (the ASR
+                // model's own output), falling back to the cleaned text.
+                content = TranscriptTimeline.ToPlainTextJson(timed.HasWords
+                    ? timed
+                    : new TimedTranscript(row.Raw ?? row.Cleaned ?? "", Array.Empty<TimedWord>()));
+                ext = ".json";
+                filter = "JSON transcript (*.json)|*.json";
+                break;
+            case "jsontimed":
+                content = TranscriptTimeline.ToTimestampedJson(timed);
+                ext = ".json";
+                filter = "Timestamped JSON (*.json)|*.json";
+                suffix = "-timed";
+                break;
+            case "vtt":
+                content = TranscriptTimeline.ToVtt(timed.Words);
+                ext = ".vtt";
+                filter = "WebVTT subtitles (*.vtt)|*.vtt";
+                break;
+            default: // "srt"
+                content = TranscriptTimeline.ToSrt(timed.Words);
+                ext = ".srt";
+                filter = "SubRip subtitles (*.srt)|*.srt";
+                break;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            FileName = $"athena-{row.StartedAt:yyyy-MM-dd-HHmmss}{suffix}",
+            DefaultExt = ext,
+            Filter = filter,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            File.WriteAllText(dialog.FileName, content);
+            SearchBox.PlaceholderText = $"Export written: {dialog.FileName}";
+        }
+        catch (Exception ex)
+        {
+            SearchBox.PlaceholderText = $"Export failed: {ex.Message}";
+        }
     }
 }

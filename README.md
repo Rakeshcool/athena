@@ -89,7 +89,7 @@ win-x64 build (no .NET runtime needed on the target machine) and compiles
 and offers desktop / start-at-login shortcuts. User data (history DB, session
 audio, logs, `settings.json`) survives uninstall and upgrades.
 
-Run the tests (160 tests: pure-logic suites, WPF layout regression tests, plus
+Run the tests (201 tests: pure-logic suites, WPF layout regression tests, plus
 live integration tests that auto-skip when the local servers are down):
 
 ```powershell
@@ -135,7 +135,10 @@ without losing words:
 3. **The whole-utterance decode** — at key-up, each on-disk WAV (the mic's, and
    the system capture when present) goes to the file endpoint
    (`POST /v1/audio/transcriptions`) and *that* transcript is what
-   gets inserted. In local testing the file decode of a session was always
+   gets inserted. The decode requests the server's native `verbose_json`
+   response format, so the model's own per-word timestamps ride along into
+   History (powering the chronological meeting transcript and the SRT / VTT /
+   JSON exports — no custom alignment anywhere). In local testing the file decode of a session was always
    complete while realtime streams occasionally dropped words, so the file is
    the record and the stream is the preview. (You can flip this: **Use the
    stream for the final text** in Settings trades the safety for lower latency,
@@ -180,8 +183,10 @@ kept, audio dropped) after the retention window you set.
   computer is playing (calls, YouTube, Spotify, games — the default output
   device). Each source streams through its own realtime ASR session, the pill
   shows two labeled lanes side by side (`SYSTEM` left, `MIC` right) over the
-  shared waveform, and the pasted result is your words, then a blank line,
-  then the computer's. A tap+Space latch takes the loopback alone with the
+  shared waveform, and the pasted result is one chronological meeting
+  transcript — `You:` and `Them:` labels interleaved in the order the words
+  were actually spoken (takes without word timings keep the classic
+  mic-then-system, blank-line layout). A tap+Space latch takes the loopback alone with the
   mic off. If loopback can't open (no output endpoint), the take degrades to
   mic-only instead of failing, and a loopback failure mid-take never kills
   your dictation.
@@ -198,7 +203,12 @@ kept, audio dropped) after the retention window you set.
   auto-drain when the servers return; every failure is retryable from History;
   recovered sessions surface via tray balloon.
 - **History** — full-text search (FTS5), raw/cleaned toggle, audio playback,
-  per-row Copy/Retry/Delete. Retention prunes aged audio, never transcripts.
+  per-row Copy/Retry/Delete, and export in every one of the ASR server's
+  response formats: **SRT**, **WebVTT**, **JSON** (`{"text": …}`) and
+  **timestamped JSON** (`duration`/`language`/`task`/`text`/`words`) — all
+  re-serialized from the per-word timestamps the model itself produced and
+  stored per session in `history.db` (Retry re-decodes with timestamps so
+  recovered rows export too). Retention prunes aged audio, never transcripts.
 - **Earcons** — the Athena start/stop/success/error/lock sounds, synthesized at
   startup (no sound files shipped).
 - **Honest server status** — the title-bar dot isn't cosmetic: every 5s both
@@ -257,6 +267,7 @@ src/
     ValidationGate.cs          the never-insert-garbage gate (pure)
     ReplacementEngine.cs       deterministic wrong→right rules (pure)
     TranscriptDiff.cs          the you-said → fixed alignment (pure)
+    TranscriptTimeline.cs      word timings, meeting interleave, exports (pure)
     TranscriptSourcePolicy.cs  stream vs file decision matrix (pure)
     TrailingCapturePolicy.cs   keep listening past key-up (pure)
     PromptV1.cs                the cleanup steering prompt
@@ -277,7 +288,7 @@ src/
     Hud/HudPillWindow.cs       the non-activating pill: live text + edit reveal
     Sound/EarconPlayer.cs      synthesized earcons
     Windows/                   tray, main, Settings, History windows
-tests/                    160 tests: pure-logic suites + live integration tests
+tests/                    201 tests: pure-logic suites + live integration tests
 scripts/                  dev probes + icon generator (python, uv-run)
 docs/
   WINDOWS_PORT.md        port notes: what was mapped, what was trimmed

@@ -66,6 +66,36 @@ public class HistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void Timeline_json_survives_upserts_and_reads_null_on_legacy_rows()
+    {
+        var id = Guid.NewGuid();
+        _store.Upsert(new DictationRecord { Id = id, StartedAt = DateTime.Now, Status = SessionStatus.Recording });
+        var mid = _store.Get(id);
+        Assert.Null(mid!.TimelineJson); // a take in flight — no timings yet
+
+        _store.Upsert(new DictationRecord
+        {
+            Id = id, StartedAt = mid.StartedAt, Status = SessionStatus.Recorded,
+            RawTranscript = "Hello world.", CleanedTranscript = "Hello world.",
+            TimelineJson = "{\"Text\":\"Hello world.\",\"Words\":[{\"Start\":0.64,\"End\":0.88,\"Word\":\"Hello\"}]}",
+        });
+        var done = _store.Get(id);
+        Assert.NotNull(done!.TimelineJson);
+        Assert.Contains("Hello", done.TimelineJson);
+
+        // A later row without a timeline must NOT erase it (COALESCE upsert —
+        // the final no-timeline status write happens on every session).
+        _store.Upsert(new DictationRecord
+        {
+            Id = id, StartedAt = mid.StartedAt, Status = SessionStatus.Inserted,
+            RawTranscript = "Hello world.", CleanedTranscript = "Hello world.",
+        });
+        var final = _store.Get(id);
+        Assert.NotNull(final!.TimelineJson);
+        Assert.Equal(SessionStatus.Inserted, final.Status);
+    }
+
+    [Fact]
     public void Delete_all_clears_everything()
     {
         _store.Upsert(new DictationRecord

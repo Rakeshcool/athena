@@ -27,6 +27,13 @@ public interface ITranscriber
     /// test fakes that don't care about profiles keep compiling.</summary>
     Task<string> TranscribeAsync(string wavPath, CancellationToken ct, string? language)
         => TranscribeAsync(wavPath, ct);
+
+    /// <summary>Transcribe keeping the server's per-word timings. Default
+    /// returns Empty so implementations and test fakes that don't care about
+    /// timelines keep compiling; callers treat Empty as plain text with no
+    /// words (composition and export fall back to the untimed path).</summary>
+    Task<TimedTranscript> TranscribeTimedAsync(string wavPath, CancellationToken ct, string? language)
+        => Task.FromResult(TimedTranscript.Empty);
 }
 
 public sealed class LocalAsrClient : ITranscriber
@@ -79,13 +86,46 @@ public sealed class LocalAsrClient : ITranscriber
 
     public async Task<string> TranscribeAsync(string wavPath, CancellationToken ct, string? language)
     {
+        var (ok, status, body) = await PostTranscriptionAsync(wavPath, language, "json", ct);
+        if (!ok)
+            throw new TranscriptionException(
+                $"ASR server returned {status}: {Truncate(body)}", status);
+        using var doc = JsonDocument.Parse(body);
+        var text = doc.RootElement.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+        // Auto-detect mode leaves <xx-XX> tags after terminal punctuation —
+        // never let model markup reach the editor or the validation gate.
+        return LanguageCatalog.StripLanguageTags(text).Trim();
+    }
+
+    /// <summary>Transcribe and keep the model's word timings: requests the
+    /// server's verbose_json response format — a native capability of the
+    /// Nemotron server (verified live: duration + per-word start/end/confidence),
+    /// NOT custom alignment — parsed by TranscriptTimeline. A blank body parses
+    /// to Empty; an HTTP failure throws TranscriptionException exactly like the
+    /// plain path, so retries and history rows behave the same.</summary>
+    public async Task<TimedTranscript> TranscribeTimedAsync(string wavPath, CancellationToken ct, string? language = null)
+    {
+        var (ok, status, body) = await PostTranscriptionAsync(wavPath, language, "verbose_json", ct);
+        if (!ok)
+            throw new TranscriptionException(
+                $"ASR server returned {status}: {Truncate(body)}", status);
+        return TranscriptTimeline.FromVerboseJson(body);
+    }
+
+    /// <summary>The shared multipart request. response_format is a server
+    /// dropdown: "json" for plain dictation (identical request bytes to
+    /// before), "verbose_json" adds duration and per-word timings at roughly
+    /// the same latency.</summary>
+    private async Task<(bool Ok, int StatusCode, string Body)> PostTranscriptionAsync(
+        string wavPath, string? language, string responseFormat, CancellationToken ct)
+    {
         await using var file = File.OpenRead(wavPath);
         using var content = new MultipartFormDataContent();
         var fileContent = new StreamContent(file);
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", Path.GetFileName(wavPath));
         // Whisper-compatible knobs the server ignores gracefully if unsupported.
-        content.Add(new StringContent("json"), "response_format");
+        content.Add(new StringContent(responseFormat), "response_format");
         // Explicit per-call language (app profile) wins over the configured one.
         var lang = string.IsNullOrWhiteSpace(language)
             ? EffectiveLanguage
@@ -96,19 +136,8 @@ public sealed class LocalAsrClient : ITranscriber
             content.Add(new StringContent(boost), "speech_contexts");
 
         using var resp = await _http.PostAsync($"{_baseUrl}/v1/audio/transcriptions", content, ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            var body = await resp.Content.ReadAsStringAsync(ct);
-            throw new TranscriptionException(
-                $"ASR server returned {(int)resp.StatusCode}: {Truncate(body)}",
-                (int)resp.StatusCode);
-        }
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
-        var text = doc.RootElement.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-        // Auto-detect mode leaves <xx-XX> tags after terminal punctuation —
-        // never let model markup reach the editor or the validation gate.
-        return LanguageCatalog.StripLanguageTags(text).Trim();
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
     }
 
     public async Task<bool> IsHealthyAsync(CancellationToken ct)
