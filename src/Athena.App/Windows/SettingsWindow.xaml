@@ -361,18 +361,32 @@
                 </StackPanel>
             </Grid>
 
-            <!-- About -->
+            <!-- About: version comes from the build (never hardcoded);
+                 shortcut rows render from LIVE settings — a rebind or the
+                 system-audio toggle reshapes the list on the next visit. -->
             <StackPanel x:Name="AboutPage" Visibility="Collapsed" Margin="0,4,0,0">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
                     <Image Source="/Assets/Athena.ico" Width="32" Height="32"
                            VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
-                    <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="Medium"
-                               VerticalAlignment="Center" Margin="10,0,0,0"/>
+                    <StackPanel VerticalAlignment="Center" Margin="10,0,0,0">
+                        <TextBlock Text="Athena for Windows" FontSize="18" FontWeight="Medium"/>
+                        <TextBlock x:Name="AboutVersion" FontSize="12" Opacity="0.55" Text="version"/>
+                    </StackPanel>
                 </StackPanel>
-                <TextBlock TextWrapping="Wrap" Margin="0,8" Opacity="0.7"
+                <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Opacity="0.7"
                            Text="Hold a key, speak, and polished text lands at your cursor — fully local. Nemotron ASR + llama.cpp cleanup, no cloud, no accounts."/>
-                <TextBlock TextWrapping="Wrap" Opacity="0.7"
-                           Text="Audio is on disk before any transcription starts, every failure is retryable from History, and transcripts never leave this machine."/>
+                <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Opacity="0.7"
+                           Text="Audio is on disk from the first millisecond — a crash costs nothing — and every failed take is retryable from History."/>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Shortcuts"/>
+                <StackPanel x:Name="ShortcutRows"/>
+                <TextBlock Style="{StaticResource HelpText}" Margin="0,6,0,0"
+                           Text="The dictation key is rebindable in General. App-specific overrides live in Profiles."/>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Where your data lives"/>
+                <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12" Margin="0,2,0,0"
+                           Text="Everything Athena keeps is in %APPDATA%\Athena — settings.json, dictionary.json, app-profiles.json, history.db (transcripts), the sessions folder (audio), and logs. Delete the folder and Athena starts fresh."/>
+                <TextBlock x:Name="PrivacyText" TextWrapping="Wrap" Opacity="0.7" FontSize="12" Margin="0,6,0,0"/>
             </StackPanel>
             </Grid>
             </ScrollViewer>

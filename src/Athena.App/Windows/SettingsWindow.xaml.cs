@@ -65,7 +65,8 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     /// <summary>Pill-tab bar drives five content panels; the TabControl's own
-    /// content is never used.</summary>
+    /// content is never used. The About page re-renders on every visit so its
+    /// shortcut list reflects a rebind made earlier in the same session.</summary>
     private void ShowPage()
     {
         GeneralPage.Visibility = PillTabs.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -73,6 +74,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         DictionaryPage.Visibility = PillTabs.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
         ProfilesPage.Visibility = PillTabs.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
         AboutPage.Visibility = PillTabs.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+        if (PillTabs.SelectedIndex == 4) RefreshAbout();
     }
 
     /// <summary>Implicit save stays, but it's no longer silent: a brief
@@ -155,6 +157,56 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         SystemAudioToggle.IsChecked = _settings.SystemAudioEnabled;
         RefreshDict();
         RefreshProfiles();
+        RefreshAbout();
+    }
+
+    // --- About page (live shortcut list, version, privacy line) -----------
+
+    /// <summary>Rebuild the About page's shortcut rows from LIVE settings:
+    /// the dictation-key row follows a rebind, and the Space-gesture rows
+    /// appear only while Capture system audio is on — exactly like the
+    /// coordinator's own hints.</summary>
+    private void RefreshAbout()
+    {
+        AboutVersion.Text = $"version {VersionText.Version}";
+        var key = Interop.HotkeyName.For((ushort)_settings.HotkeyVk);
+        ShortcutRows.Children.Clear();
+        foreach (var (gesture, effect) in new[]
+        {
+            ($"Hold {key} and speak", "inserts polished text at the cursor when you release"),
+            ($"Hold {key}, tap Space", "hands-free lock — keeps recording until you tap the key again"),
+            ($"Tap {key}, then Space", $"captures system audio — the meeting, not your voice (tap {key} or Ctrl+Shift+S to finish)"),
+            ("Esc", "cancels the take — nothing is pasted"),
+            ("Ctrl+Shift+S", "stops a live take and pastes the result"),
+        }.Where(r => SystemAudioShortcutApplies(r.Item1)))
+        {
+            AddShortcutRow(gesture, effect);
+        }
+        PrivacyText.Text = "Audio never leaves this machine: speech is transcribed by the local ASR server, then cleaned by the local LLM server — both on your PC, over localhost only.";
+    }
+
+    /// <summary>The hands-free lock and the system-audio latch exist only while
+    /// Capture system audio is on (the grammar's opt-in flag).</summary>
+    private bool SystemAudioShortcutApplies(string gesture) =>
+        !(gesture.Contains("Space") && !_settings.SystemAudioEnabled);
+
+    private void AddShortcutRow(string gesture, string effect)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 4, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var g = new TextBlock { Text = gesture, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+        var e = new TextBlock
+        {
+            Text = effect, FontSize = 12, Opacity = 0.55,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0),
+        };
+        Grid.SetColumn(g, 0);
+        Grid.SetColumn(e, 1);
+        grid.Children.Add(g);
+        grid.Children.Add(e);
+        ShortcutRows.Children.Add(grid);
     }
 
     private void Save()
