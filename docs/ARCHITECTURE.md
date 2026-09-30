@@ -126,3 +126,4 @@ server is down.
 - No verbatim toggle / hold-Shift-verbatim yet.
 - Insertion is one tier (synthesized Ctrl+V) + clipboard floor; no per-app
   quirks table yet.
+  yet to be fully tested
