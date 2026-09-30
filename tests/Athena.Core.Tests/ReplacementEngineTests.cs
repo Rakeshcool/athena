@@ -10,7 +10,7 @@ public class ReplacementEngineTests
     {
         // Without longest-first ordering, "gemini" would fire inside "gemini api"
         // and produce "Nemotron api". (Note: rules are applied sequentially over
-        // the result, exactly like the Swift original — later rules can re-match
+        // the result — later rules can re-match
         // earlier replacements, so dictionary terms should not overlap.)
         var rules = new[]
         {

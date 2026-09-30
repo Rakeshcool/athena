@@ -5,9 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Athena began as a macOS prototype ("Jot", cloud-backed, August 2026) and was
-rebuilt from scratch as a fully local Windows application in September 2026.
-The entries below cover the Windows application.
+Athena is a fully local Windows application. The entries below cover it from
+its first release.
 
 ## [Unreleased]
 
@@ -51,7 +50,7 @@ Inno Setup installer.
 #### Live streaming
 - Realtime streaming ASR over the Nemotron server's realtime WebSocket: words render in the HUD while you speak, degrading gracefully to file decode when streaming is off or unavailable.
 - Streaming-vs-file cross-check ("first-word arbiter") toggle that corrects zero-left-context first-word errors using the file decode.
-- Three-beat HUD pill: live partial words → a "you said → Jot wrote" reveal that strikes the fillers and shows the cleanup → the settled sentence. Word-gap spacing, scrollable text with no length cap, and a waveform that dances for as long as audio flows.
+- Three-beat HUD pill: live partial words → a "you said → Athena wrote" reveal that strikes the fillers and shows the cleanup → the settled sentence. Word-gap spacing, scrollable text with no length cap, and a waveform that dances for as long as audio flows.
 
 #### System audio (WASAPI loopback)
 - Optional loopback capture of whatever plays through the default output device — Zoom/Meet calls, YouTube, Spotify, games — with no microphone involved.
@@ -63,7 +62,6 @@ Inno Setup installer.
 - Windows installer (Inno Setup) with a build script, and an application icon.
 
 ### Changed
-- Renamed the app from **Jot** to **Athena**; the macOS sources moved out of the Windows build and CI retargeted at Windows.
 - Settings General tab labels rewritten in plain language.
 
 ### Fixed

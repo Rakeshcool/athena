@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/TranscriptionClient/TimeoutPolicy.swift.
 // The single source of truth for every network deadline in the app.
 // (Critic reconciliation #9 — no other file may define timeout constants.)
 

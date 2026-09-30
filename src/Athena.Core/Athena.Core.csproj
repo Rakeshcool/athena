@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Headless core: zero Windows-specific or UI dependencies, so the whole
-         engine runs under plain `dotnet test` like JotCore's `swift test`. -->
+         engine runs under plain `dotnet test`. -->
   </PropertyGroup>
 
   <ItemGroup>

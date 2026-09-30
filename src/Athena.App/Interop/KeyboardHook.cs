@@ -15,7 +15,7 @@
 // and the id retired — every HotkeyDown the grammar sees is paired with
 // exactly one HotkeyUp, and residuals are never forwarded. The callback does
 // classification only and returns fast; timing rules live in the pure
-// HotkeyProcessor, mirroring EventTapEngine.swift's contract.
+// HotkeyProcessor.
 
 using System.Runtime.InteropServices;
 

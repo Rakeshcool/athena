@@ -1,4 +1,4 @@
-// Windows-port original: the History window (HistoryWindow.swift). Search is
+// The History window. Search is
 // FTS over raw+cleaned transcripts; rows toggle between cleaned and raw text;
 // audio playback proves nothing was lost; Retry re-sends stored audio through
 // the current pipeline (the "every failure is retryable" guarantee); Delete

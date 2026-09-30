@@ -1,5 +1,5 @@
-// Windows-port original: P/Invoke surface for hotkeys, cursor insertion and
-// foreground-app detection. Kept in one file like JotCore's Support/ so the
+// P/Invoke surface for hotkeys, cursor insertion and
+// foreground-app detection. Kept in one file so the
 // Win32 boundary is auditable at a glance.
 
 using System.Runtime.InteropServices;

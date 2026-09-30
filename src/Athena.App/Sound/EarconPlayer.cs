@@ -1,5 +1,5 @@
-// Windows-port original: plays the synthesized G-major earcon family at state
-// transitions (frame-synced to SetState, like the macOS SoundEngine). Sounds
+// Plays the synthesized G-major earcon family at state
+// transitions (frame-synced to SetState). Sounds
 // are rendered once at startup into memory WAVs; System.Media.SoundPlayer
 // plays them async so the UI thread never blocks on audio.
 

@@ -1,9 +1,8 @@
-// Windows-port original: the orchestrator, mirroring DictationCoordinator.swift.
-// Translates hotkey intents into session lifecycle via the pure
+// The orchestrator. Translates hotkey intents into session lifecycle via the pure
 // DictationStateMachine, drives capture → ASR → LLM cleanup → insertion, and
 // persists every status transition so nothing is ever lost.
 //
-// v1.x upgrades ported from the macOS coordinator:
+// Later upgrades:
 //  - Session CONTEXT is captured per in-flight task, so a new dictation may
 //    begin while the previous one is still transcribing/inserting (overlapping
 //    sessions; a superseded task's state writes are dropped, its History row

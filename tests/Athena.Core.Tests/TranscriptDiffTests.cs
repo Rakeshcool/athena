@@ -1,4 +1,3 @@
-// Ported from JotCore/Tests/JotCoreTests/TranscriptDiffTests.swift.
 // The diff behind the HUD's "here is what got removed" reveal. It runs on every
 // dictation and its output is shown to the user, so it has to be right about
 // ordinary speech and, more importantly, has to fail quietly on speech it

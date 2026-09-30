@@ -1,8 +1,8 @@
-// Windows-port original: the user's jargon, persisted as JSON at
+// The user's jargon, persisted as JSON at
 // %APPDATA%\Athena\dictionary.json. Terms ride in the cleanup prompt (suggesting
 // spellings to the model); the explicit wrong→right rules are then ENFORCED by
-// ReplacementEngine after the model — the dictionary's guarantee. Mirrors
-// DictionaryStore.swift + CSV import (quick-add is the Settings UI's job).
+// ReplacementEngine after the model — the dictionary's guarantee. CSV import
+// included (quick-add is the Settings UI's job).
 
 using System.IO;
 using System.Text.Json;

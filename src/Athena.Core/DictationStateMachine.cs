@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/SessionCoordinator/DictationStateMachine.swift
 // Pure transition function — the only place session-lifecycle rules live.
 
 namespace Athena.Core;

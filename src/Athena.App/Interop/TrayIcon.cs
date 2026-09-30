@@ -29,8 +29,8 @@ public sealed class TrayIcon : IDisposable
 
     public event EventHandler? Click;
 
-    /// <summary>Queued/recovered notifications surface here — never modal, the
-    /// tray balloon is the Windows analog of the macOS menu-bar error dot.</summary>
+    /// <summary>Queued/recovered notifications surface here — never modal; the
+    /// tray balloon replaces an error dialog.</summary>
     public void ShowBalloon(string title, string message)
     {
         _icon.BalloonTipTitle = title;

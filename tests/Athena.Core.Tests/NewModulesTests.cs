@@ -117,7 +117,6 @@ public class DictionaryStoreTests : IDisposable
     {
         _dir = Path.Combine(Path.GetTempPath(), $"athena-dict-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_dir);
-        Environment.SetEnvironmentVariable("JOT_TEST_HOME", _dir);
     }
 
     [Fact]

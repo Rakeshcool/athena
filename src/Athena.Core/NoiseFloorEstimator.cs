@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/SessionCoordinator/NoiseFloorEstimator.swift.
 // Measures how loud the room is, so "did they speak?" can be asked relative to
 // the room instead of against a constant that assumes a quiet one.
 //

@@ -1,17 +1,16 @@
-// Windows-port original: the HUD pill (PillHUDController.swift + PillView.swift).
-// A borderless, topmost, non-activating window at bottom-center of the screen —
-// the WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW analog of NSPanel .nonactivatingPanel:
+// The HUD pill.
+// A borderless, topmost, non-activating window at bottom-center of the screen
+// (WS_EX_NOACTIVATE/WS_EX_TOOLWINDOW):
 // it never steals focus from the app you're dictating into, never shows a task
 // bar entry, and mouse events pass through.
 //
-// The pill is a single shape that hosts every state, matching the macOS
-// presentation the user picked from the reference screenshots:
+// The pill is a single shape that hosts every state:
 //   while speaking   →  ATHENA WRITES  <live partial words>
 //   issues found     →  YOU SAID       "umm, so let's meet at 1pm — actually, no, make it 2pm"
 //   the edit marked  →  cut runs strike through red, then collapse to zero width,
 //                       settling on the cleaned sentence — the text that is pasted.
 //
-// The correction reveal (CorrectionView.swift): the mark beat exists solely to
+// The correction reveal: the mark beat exists solely to
 // be legible; the collapse closes the sentence up around the cuts so the
 // cleaned result reads as an edit, not a teleport. The cleaned sentence on its
 // own looks like the user simply spoke well; the struck-out fillers and
@@ -34,7 +33,7 @@ namespace Athena.App.Hud;
 public sealed class HudPillWindow : Window
 {
     private const double PillMinWidth = 208;
-    private const double PillMaxWidth = 560;   // the mac notice pill's width ceiling
+    private const double PillMaxWidth = 560;   // the notice pill's width ceiling
     private const double PillCornerRadius = 24;
 
     /// <summary>The flowing text grows to this height, then scrolls. ~7 lines
@@ -84,8 +83,8 @@ public sealed class HudPillWindow : Window
     /// would make the paste result flash away before it can be read.</summary>
     private bool _revealHolding;
 
-    /// <summary>When true the card auto-scrolls to the newest words (the mac
-    /// pill's tail anchoring, as sticky-bottom scrolling instead of truncation).
+    /// <summary>When true the card auto-scrolls to the newest words
+    /// (sticky-bottom scrolling instead of truncation).
     /// Scrolling up (wheel) unpins it so earlier text can be read; scrolling
     /// back to the bottom re-pins. NOT reset per delta — partials arrive at
     /// delta cadence and that would yank the user back to the end constantly.</summary>
@@ -113,7 +112,7 @@ public sealed class HudPillWindow : Window
         ShowActivated = false;
 
         // The pill stretches with its content (bars alone when idle, label +
-        // flowing text while dictating) — the mac pill's grow-to-fit shape.
+        // flowing text while dictating) — grow-to-fit shape.
         _flowLabel = new TextBlock
         {
             FontSize = 10,
@@ -415,7 +414,7 @@ public sealed class HudPillWindow : Window
     }
 
     /// <summary>Processing state: the sine dance runs in EVERY state — beneath
-    /// the streaming words (which persist through processing, mac behavior),
+    /// the streaming words (which persist through processing),
     /// not instead of them.</summary>
     public void SetProcessing()
     {
@@ -589,7 +588,7 @@ public sealed class HudPillWindow : Window
     private static readonly TimeSpan MarkHold = TimeSpan.FromMilliseconds(780);
     private static readonly TimeSpan CollapseTime = TimeSpan.FromMilliseconds(500);
 
-    /// <summary>The "YOU SAID → fixed text" reveal (CorrectionView.swift), in
+    /// <summary>The "YOU SAID → fixed text" reveal, in
     /// the pill — the second and third reference screenshots' look. Beat 1:
     /// the pill flips to YOU SAID with the full raw wording quoted. Beat 2:
     /// cut runs mark red + strikethrough, held long enough to read. Beat 3:
@@ -598,8 +597,7 @@ public sealed class HudPillWindow : Window
     /// cleaned form (the sentence the user got); cut runs show what was SAID
     /// (what they hear in their head). Fails quiet: only meaningful cuts reach
     /// here, and the diff itself renders unrelated texts as "no edit".
-    /// Every segment renders (the mac CorrectionView's ForEach — no tail
-    /// window); the pill scrolls if the edit outgrows FlowMaxHeight.</summary>
+    /// Every segment renders (no tail window); the pill scrolls if the edit outgrows FlowMaxHeight.</summary>
     public void ShowCorrection(IReadOnlyList<TranscriptDiff.Segment> segments)
     {
         _revealGeneration++;
@@ -682,8 +680,7 @@ public sealed class HudPillWindow : Window
         {
             anyStarted = true;
             // Width is Auto (NaN) until pinned — a To-only animation from NaN
-            // silently no-ops. Pin to the laid-out width first (the WPF analog
-            // of the Swift view's .fixedSize()): the cut needs a real width to
+            // silently no-ops. Pin to the laid-out width first: the cut needs a real width to
             // collapse FROM, and the WrapPanel re-flows the kept runs as it goes.
             run.Width = run.ActualWidth;
             var widthAnim = new DoubleAnimation

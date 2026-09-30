@@ -1,8 +1,8 @@
-// Windows-port original: orchestrates the ported formatting stack.
+// Orchestrates the formatting pipeline.
 // raw transcript → steering prompt → local LLM → artifact strip → validation
 // gate → deterministic replacements. On gate rejection the RAW transcript is
 // used (it already has punctuation from the ASR model — a high-quality
-// fallback), mirroring JotCore's "never insert garbage" rule.
+// fallback) — the "never insert garbage" rule.
 
 using Athena.Core.Clients;
 

@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows;
 using Athena.App.Audio;
 using Athena.App.Interop;
@@ -14,7 +13,6 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        MigrateLegacyDataDirectory();
 
         // Theme: the persisted ThemeMode (System default) resolves to the
         // effective palette BEFORE any window loads, so the first paint is
@@ -52,28 +50,6 @@ public partial class App : System.Windows.Application
         };
 
         base.OnStartup(e);
-    }
-
-    /// <summary>One-time migration: the app was called Jot before it was
-    /// called Athena, and its data (settings.json, history.db, recordings,
-    /// logs) lived in %APPDATA%\Jot. Move the whole directory once so users
-    /// keep their history; failure is logged and non-fatal — a fresh
-    /// directory is always an acceptable outcome. Must run before anything
-    /// touches %APPDATA%\Athena.</summary>
-    private static void MigrateLegacyDataDirectory()
-    {
-        try
-        {
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var legacy = Path.Combine(appData, "Jot");
-            var current = Path.Combine(appData, "Athena");
-            if (!Directory.Exists(legacy) || Directory.Exists(current)) return;
-            Directory.Move(legacy, current);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"data migration from %APPDATA%\\Jot failed: {ex.Message}");
-        }
     }
 
     protected override void OnExit(ExitEventArgs e)

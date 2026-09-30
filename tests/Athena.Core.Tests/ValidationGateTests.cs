@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Athena.Core.Tests;
 
-/// <summary>Port of ValidationGateTests.swift's fixture classes: answer-mode,
+/// <summary>Fixture classes: answer-mode,
 /// paraphrase drift, hallucinated expansion, content-dropping, ITN normalization.</summary>
 public class ValidationGateTests
 {
@@ -46,8 +46,8 @@ public class ValidationGateTests
         var cleaned = "Sure! As an AI language model, I cannot send reports.";
         var v = ValidationGate.Validate(raw, cleaned);
         // The opener "Sure!" trips answer_pattern before ai_selfreference is
-        // reached — the port checks the pattern after length/containment unlike
-        // the Swift ordering; both are rejections, which is the invariant.
+        // reached — the gate checks the pattern after length/containment;
+        // both are rejections, which is the invariant.
         Assert.False(v.Accepted);
         Assert.Equal("answer_pattern", v.Reason);
     }

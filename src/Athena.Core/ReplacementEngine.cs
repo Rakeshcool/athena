@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/FormattingPipeline/ReplacementEngine.swift.
 // Deterministic post-model replacement layer: the dictionary's guarantee.
 // The cleanup prompt *suggests* spellings to the model; this layer *enforces*
 // the explicit wrong→right rules afterward. Longest-match-first, word-boundary,

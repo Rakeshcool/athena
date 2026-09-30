@@ -1,7 +1,6 @@
-// Windows-port original: the RecoveryScanner analog. WAV finalizes a 44-byte
-// header on close; a crash tears it. CAF (the macOS format) is chosen because
-// it survives that; on Windows we keep WAV but repair the header from the file
-// size, restoring the same "recording recovered on next launch" guarantee.
+// Recovery for crash-torn recordings: WAV finalizes a 44-byte header on
+// close; a crash tears it. This repairs the header from the file size so the
+// recording is always playable and can be recovered on next launch.
 
 using System.IO;
 using NAudio.Wave;

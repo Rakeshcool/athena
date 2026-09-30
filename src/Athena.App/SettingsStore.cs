@@ -1,6 +1,5 @@
-// Windows-port original: settings persistence, mirroring SettingsStore.swift's
-// role. JSON in %APPDATA%\Athena\settings.json (Keychain → DPAPI arrives with the
-// API-key era; there are no secrets in the local-only port).
+// Settings persistence: JSON in %APPDATA%\Athena\settings.json (there are no
+// secrets in the local-only app).
 
 using System.IO;
 using System.Text.Json;

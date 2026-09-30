@@ -1,5 +1,4 @@
-// Windows-port original: the insertion ladder, mirroring JotCore's InsertionEngine.
-// Athena's ladder is AX → paste → chip; the Windows equivalent is:
+// The insertion ladder.
 //   Tier 1: Ctrl+V send (works in terminals and most editors)
 //   Tier 2: Ctrl+Shift+V retry (apps that bind plain-paste differently)
 //   Tier 3: text already on clipboard, "Ctrl+V to insert" chip (Athena's floor)
@@ -11,7 +10,7 @@
 // KEY FIX (dogfood #1): we synthesize Ctrl+V right after the user releases the
 // Ctrl+Win+J hotkey. A synthesized modifier down + V + ups while the USER is
 // still physically holding Ctrl/Win produces Ctrl+Win+V in the target app —
-// not a paste. Athena-on-macOS never hit this because fn is a lone modifier. We
+// not a paste. We
 // therefore wait for the physical Ctrl AND Win keys to be released before
 // pasting (a 1.2s cap keeps a stuck modifier from hanging the session).
 
@@ -49,7 +48,7 @@ public sealed class SendInputInserter : IInserter
             return InsertionOutcome.FellBackToClipboard;
 
         // 2. Wait out the user's physical Ctrl/Win keys, then a settle beat —
-        //    mirroring the 100ms gap the macOS PasteInserter uses before ⌘V.
+        //    a 100ms gap before pasting.
         await WaitForModifierRelease(ct);
         await Task.Delay(100, ct);
 

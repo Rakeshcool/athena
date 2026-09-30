@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/FormattingPipeline/ValidationGate.swift.
 // The "never insert garbage" gate (<1ms, runs between cleanup and insertion).
 //
 // Defends against the documented failure modes of prompted cleanup models:

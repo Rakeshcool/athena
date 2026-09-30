@@ -1,6 +1,6 @@
-// Windows-port original: the G-major earcon family (EarconPlayer.swift's
-// spec: start = D5→G5 rise ~160ms; stop = mirror; success = G5 tap; error =
-// muted F♯4+G4 dyad; lock = G4-B4-D5 arpeggio), synthesized at startup —
+// The G-major earcon family (start = D5→G5 rise ~160ms; stop = mirror;
+// success = G5 tap; error = muted F♯4+G4 dyad; lock = G4-B4-D5 arpeggio),
+// synthesized at startup —
 // no sound files to ship, same <400ms, quiet, frame-synced-to-state feel.
 
 using System.IO;

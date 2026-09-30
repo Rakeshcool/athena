@@ -1,4 +1,4 @@
-// Windows-port original: microphone capture, mirroring JotCore's AudioEngine.
+// Microphone capture.
 // Capture runs in the device's native mix format (always accepted in WASAPI
 // shared mode) and is transcoded to 16 kHz mono 16-bit after stop — the same
 // "encode at key-up" shape as Athena's FLAC pipeline, and immune to devices that
@@ -74,7 +74,7 @@ public sealed class WavRecorder : IDisposable
 
     /// <summary>Identity of the capture device this recorder is bound to, or
     /// null when no graph exists. The warm pool compares it against the current
-    /// default before trusting a spare (macOS WarmEnginePool.refresh()).</summary>
+    /// default before trusting a spare.</summary>
     public string? DeviceId => _deviceId;
 
     /// <summary>The exception that made the last Warm() fail, for diagnostics —
@@ -95,8 +95,7 @@ public sealed class WavRecorder : IDisposable
     }
 
     /// <summary>Build the capture graph ahead of time (device resolution + WASAPI
-    /// client activation + format negotiation — the 75–135ms the macOS port notes
-    /// measured as exactly where first words were lost). No audio flows; the mic
+    /// client activation + format negotiation). No audio flows; the mic
     /// indicator does not light. Safe to call twice; never throws out.
     /// Returns false when no input device exists (Start will report that too).</summary>
     public bool Warm()

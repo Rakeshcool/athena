@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Athena.Core.Tests;
 
-/// <summary>Port of HotkeyProcessorTests.swift's core matrix: hold, tap, Space-lock,
+/// <summary>Core matrix: hold, tap, Space-lock,
 /// Esc cancel, accidental chord, swallow semantics.</summary>
 public class HotkeyProcessorTests
 {

@@ -1,5 +1,4 @@
-// Ported from JotCore/Sources/HistoryStore/ (HistoryStore.swift + SessionMeta.swift).
-// SQLite (Microsoft.Data.Sqlite) replaces GRDB; the per-dictation folder with
+// SQLite (Microsoft.Data.Sqlite) storage; the per-dictation folder with
 // audio + meta stays the same shape so nothing is ever lost and every failure
 // is retryable from History.
 

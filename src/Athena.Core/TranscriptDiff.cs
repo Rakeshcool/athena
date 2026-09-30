@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/FormattingPipeline/TranscriptDiff.swift.
 // Works out which words cleanup removed, so the HUD can show the edit rather
 // than just the result: "umm, so let's meet at 1pm — actually, no, make it 2pm"
 // → "Let's meet at 2pm." Showing the edit is far more convincing than showing

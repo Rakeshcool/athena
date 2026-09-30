@@ -1,15 +1,11 @@
-// Windows-port original: WarmRecorderPool — the analog of JotCore/App's
-// WarmEnginePool (macOS). Keeps one capture graph built and prepared while the
+// WarmRecorderPool: keeps one capture graph built and prepared while the
 // app is idle, so a key press pays only StartRecording().
 //
-// Measured on macOS: building the graph costs 75–135ms — exactly the window
-// where a user's first words are lost. WASAPI activation on Windows is cheaper
-// (single device object, no HAL node walk) but it is not free: device
-// enumeration + IAudioClient activation + mix-format negotiation still run
+// Device enumeration + IAudioClient activation + mix-format negotiation all run
 // inside Start(). Preparing is not recording: no audio flows and no microphone
 // indicator appears until Start().
 //
-// Concurrency mirrors the macOS pool: a spare is built on a background thread
+// A spare is built on a background thread
 // and only published once fully prepared, so nothing ever touches a graph that
 // is still being built. Device changes invalidate the spare at Take() time —
 // the session always wins over the optimization.

@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/FormattingPipeline/PromptV1.swift.
 // The cleanup steering prompt — a load-bearing file: changes require re-running
 // the live probe fixtures (self-correction collapse, spoken punctuation,
 // question-shaped speech preserved, instruction-injection transcribed not obeyed).

@@ -1,7 +1,6 @@
-// Windows-port original: the SettingsWindow (4-tab SwiftUI original → WPF
-// tabs). Owns the settings JSON, the dictionary editor + CSV round-trip, the
-// server-connection test, and launch-at-login via the Startup shortcut (no
-// extra dependency; registry Run key is the other common approach).
+// The Settings window. Owns the settings JSON, the dictionary editor + CSV
+// round-trip, the server-connection test, and launch-at-login via the Startup
+// shortcut (no extra dependency; registry Run key is the other common approach).
 
 using System.Diagnostics;
 using System.IO;

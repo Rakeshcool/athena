@@ -1,6 +1,4 @@
-// Ported from JotCore/Sources/HotkeyEngine/HotkeyProcessor.swift
-// The pure hotkey grammar (Wispr style — critic reconciliation #1), extended
-// with the system-audio latch (Windows-port original):
+// The pure hotkey grammar (Wispr style), extended with the system-audio latch:
 //
 //   hold ≥ 0.3s            → push-to-talk: key-up finalizes (mic + system audio)
 //   tap + Space (≤ 0.5s)   → SYSTEM-ONLY latch: loopback keeps recording,
@@ -92,7 +90,7 @@ public static class HotkeyTuning
     public const double LatchWindow = 0.5;
 }
 
-/// <summary>Pure and clock-free — exhaustively unit-tested. See HotkeyProcessorTests.swift.</summary>
+/// <summary>Pure and clock-free — exhaustively unit-tested.</summary>
 public struct HotkeyProcessor
 {
     private HotkeyPhase _phase;

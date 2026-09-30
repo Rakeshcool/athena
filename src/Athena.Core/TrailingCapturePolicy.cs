@@ -1,4 +1,3 @@
-// Ported from JotCore's trailing-capture constants (DictationCoordinator.swift).
 // Releasing the key a beat before the last word is finished is a NORMAL human
 // gesture — the hand anticipates the mouth. When the user is still speaking at
 // key-up, capture continues until they actually stop.

@@ -1,4 +1,3 @@
-// Ported from JotCore/Sources/AudioEngine/AudioLevelCurve.swift.
 // The one definition of Athena's 0…1 mic level, and its inverse.
 //
 // level = min(1, pow(min(rms * 11, 1), 0.65)) — a compressive curve so quiet

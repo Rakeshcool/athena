@@ -1,5 +1,5 @@
-// Windows-port original: the SecureInput.swift analog. macOS has
-// IsSecureEventInputEnabled(); Windows has no direct equivalent, but the same
+// Guard against pasting into secure/elevated fields. Windows has no direct
+// equivalent of other platforms' secure-input APIs, but the same
 // user-visible failure exists: SendInput into an ELEVATED foreground window is
 // blocked by UIPI — the paste silently does nothing, exactly the class of
 // "insert reported success but nothing happened" Athena refuses to allow.
@@ -31,7 +31,7 @@ public static class SecureInput
 
     /// <summary>True when the foreground window belongs to an elevated process —
     /// synthesized input would be swallowed by UIPI, so we refuse to insert
-    /// (the same graceful degradation as the macOS secure-field state).</summary>
+    /// (graceful degradation instead of a paste that goes nowhere).</summary>
     public static bool IsLocked()
     {
         try

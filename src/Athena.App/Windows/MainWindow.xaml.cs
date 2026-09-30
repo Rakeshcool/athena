@@ -1,4 +1,4 @@
-// Windows-port original: the composition root (AppDelegate.swift analog). Owns
+// The composition root. Owns
 // the tray icon, keyboard hook, coordinator, HUD pill, earcons, retry worker,
 // recovery + retention sweeps, and the window fleet. The main window is a VIEW
 // — closing it hides it; the app lives in the tray.
@@ -324,8 +324,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _coordinator.CorrectionReady += (raw, cleaned) => Dispatcher.BeginInvoke(() =>
         {
             // The reveal: show the edit, not just the result — cuts strike
-            // through, then collapse so the sentence closes up (macOS
-            // CorrectionView). Runs only when cleanup removed real words.
+            // through, then collapse so the sentence closes up.
+            // Runs only when cleanup removed real words.
             // The pill holds until the reveal finishes (mark 780ms + collapse
             // 500ms) plus a beat to read the settled sentence.
             _hud?.ShowCorrection(TranscriptDiff.Segments(raw, cleaned));

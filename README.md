@@ -4,13 +4,16 @@
 
 # Athena for Windows
 
+[![CI](https://github.com/Rakeshcool/athena/actions/workflows/ci.yml/badge.svg)](https://github.com/Rakeshcool/athena/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Rakeshcool/athena)](https://github.com/Rakeshcool/athena/releases/latest)
+
 **Hold a key. Speak. It types — and it never leaves your machine.**
 
 Local dictation for Windows: [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
 for speech-to-text and a llama.cpp-served LLM for cleanup. No cloud, no API key,
 no account. Your voice never touches the network.
 
-<sub>A Windows port of <a href="mac_stuff/docs/MACOS_README.md">Jot for macOS</a> (Gemini edition) · Apache 2.0</sub>
+<sub>Apache 2.0</sub>
 
 </div>
 
@@ -54,7 +57,7 @@ teleport.
 | **LLM server** | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` on `http://127.0.0.1:3000` (any OpenAI-compatible chat server works; reasoning models supported) |
 | **Audio** | Mic: any input device, captured in its native format. System audio: the default output device (WASAPI loopback) |
 
-Both servers are expected to already be running (the port was built against a
+Both servers are expected to already be running (Athena was built against a
 local setup; it never downloads models). Everything is localhost-only.
 
 ## Build & run
@@ -75,6 +78,10 @@ dotnet run --project src/Athena.App
 
 ## Install
 
+**Download:** grab `AthenaSetup-0.5.0.exe` from the
+[v0.5.0 release](https://github.com/Rakeshcool/athena/releases/tag/v0.5.0) —
+no build tools required on the target machine.
+
 A per-user installer (no admin rights) is built with Inno Setup:
 
 ```powershell
@@ -89,7 +96,7 @@ win-x64 build (no .NET runtime needed on the target machine) and compiles
 and offers desktop / start-at-login shortcuts. User data (history DB, session
 audio, logs, `settings.json`) survives uninstall and upgrades.
 
-Run the tests (201 tests: pure-logic suites, WPF layout regression tests, plus
+Run the tests (219 tests: pure-logic suites, WPF layout regression tests, plus
 live integration tests that auto-skip when the local servers are down):
 
 ```powershell
@@ -294,11 +301,10 @@ src/
     Hud/HudPillWindow.cs       the non-activating pill: live text + edit reveal
     Sound/EarconPlayer.cs      synthesized earcons
     Windows/                   tray, main, Settings, History windows
-tests/                    201 tests: pure-logic suites + live integration tests
+tests/                    219 tests: pure-logic suites + live integration tests
 scripts/                  dev probes + icon generator (python, uv-run)
 docs/
-  WINDOWS_PORT.md        port notes: what was mapped, what was trimmed
-mac_stuff/               the original macOS app (Swift), untracked — reference only
+  ARCHITECTURE.md        architecture notes: layout, features, limitations
 ```
 
 ## Troubleshooting
