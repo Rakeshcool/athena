@@ -143,7 +143,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         // Only the IDLE look reflects health; recording/working visuals win.
         if (_coordinator is null || _coordinator.State == DictationState.Idle)
-            Dispatcher.BeginInvoke(RenderIdleStatus);
+            _ = Dispatcher.BeginInvoke(RenderIdleStatus); // fire-and-forget on purpose
     }
 
     private void StartPulse()

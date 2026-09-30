@@ -84,8 +84,8 @@ public class TranscriptDiffTests
     public void Unrelated_texts_show_no_edit()
     {
         var segments = TranscriptDiff.Segments("the quick brown fox", "completely different words here");
-        Assert.Equal(1, segments.Count);
-        Assert.False(segments[0].IsCut);
+        var only = Assert.Single(segments);
+        Assert.False(only.IsCut);
         AssertLossless(segments, "the quick brown fox");
     }
 
@@ -106,8 +106,8 @@ public class TranscriptDiffTests
     {
         Assert.Empty(TranscriptDiff.Segments("", "anything"));
         var segments = TranscriptDiff.Segments("some words", "");
-        Assert.Equal(1, segments.Count);
-        Assert.False(segments[0].IsCut);
+        var only = Assert.Single(segments);
+        Assert.False(only.IsCut);
     }
 
     /// <summary>Adjacent words of the same kind coalesce, so the UI animates a
