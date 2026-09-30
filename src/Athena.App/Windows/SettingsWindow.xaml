@@ -249,6 +249,14 @@
                     </StackPanel>
                     <ui:ToggleSwitch Grid.Column="1" x:Name="WarmAccentToggle" VerticalAlignment="Center"/>
                 </Grid>
+
+                <TextBlock Style="{StaticResource SectionLabel}" Text="Theme"/>
+                <StackPanel Orientation="Horizontal" Margin="0,6">
+                    <RadioButton x:Name="ThemeSystemRadio" Content="System" GroupName="ThemeMode" Margin="0,0,16,0"/>
+                    <RadioButton x:Name="ThemeLightRadio" Content="Light" GroupName="ThemeMode" Margin="0,0,16,0"/>
+                    <RadioButton x:Name="ThemeDarkRadio" Content="Dark" GroupName="ThemeMode"/>
+                </StackPanel>
+                <TextBlock Text="System follows the Windows light/dark setting and switches live. Light and Dark pin the app regardless of the OS. Applies immediately — no restart." FontSize="12" Opacity="0.55" TextWrapping="Wrap" Margin="0,2,0,0"/>
             </StackPanel>
 
             <!-- Servers -->

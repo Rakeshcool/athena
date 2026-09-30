@@ -219,6 +219,11 @@ kept, audio dropped) after the retention window you set.
 - **Fluent settings** — server URLs with live connection test, language picker,
   plain-language toggles for every behavior, rebindable dictation key, warm
   accent theme, launch-at-login.
+- **System / Light / Dark theme** — the app follows the Windows light/dark
+  setting by default (live, no restart), or pins Light or Dark from
+  Settings → General → Appearance. Dark keeps the original near-black design;
+  Light uses the same layered-surface ladder on light gray. The warm-accent
+  palette works under both.
 - **Your logo everywhere** — the app icon (exe, tray, title bars) is generated
   from `logo.png` (`scripts/make_icon.py`).
 
@@ -250,6 +255,7 @@ toggle):
   "CleanupEnabled": true,        // false = raw ASR output, no LLM
   "SoundsEnabled": true,         // earcons
   "WarmAccent": false,           // true = warm salmon accent theme
+  "ThemeMode": "System",         // "System" | "Light" | "Dark" — System follows Windows
   "HotkeyVk": 192,               // 0xC0 = backtick
   "RetentionDays": 7,            // audio pruning (0 = keep forever)
   "HistoryLimit": 200

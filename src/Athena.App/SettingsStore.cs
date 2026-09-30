@@ -71,6 +71,13 @@ public sealed class AthenaSettings
     /// other setting.</summary>
     public bool WarmAccent { get; set; }
 
+    /// <summary>App theme: System follows the OS light/dark preference (the
+    /// default — never an alias for Light), Light/Dark force a palette.
+    /// Serialized as its name ("System"/"Light"/"Dark") for a human-editable
+    /// settings.json; unreadable values fall back to System on load.</summary>
+    [JsonConverter(typeof(ThemeModeJsonConverter))]
+    public ThemeMode ThemeMode { get; set; } = ThemeMode.System;
+
     /// <summary>System-audio dictation (WASAPI loopback): capture whatever the
     /// default OUTPUT device is playing — a Zoom/Meet call, YouTube, Spotify —
     /// alongside the microphone on every take. Tap + Space (or the hotkey a
@@ -85,16 +92,56 @@ public sealed class AthenaSettings
     public string AudioLanguage { get; set; } = "";
 }
 
+/// <summary>Reads ThemeMode leniently: a name ("Dark"), a number, or an
+/// unknown value all fall back to System instead of throwing — one bad key in
+/// settings.json must never reset every other setting (same rule as the
+/// legacy-number tolerance in app-profiles.json).</summary>
+public sealed class ThemeModeJsonConverter : JsonConverter<ThemeMode>
+{
+    public override ThemeMode Read(ref Utf8JsonReader reader, Type t, JsonSerializerOptions o)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return Enum.TryParse<ThemeMode>(reader.GetString(), ignoreCase: true, out var m)
+                ? m : ThemeMode.System;
+        }
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            var n = reader.GetInt32();
+            return n is >= 0 and <= 2 ? (ThemeMode)n : ThemeMode.System;
+        }
+        return ThemeMode.System;
+    }
+
+    public override void Write(Utf8JsonWriter writer, ThemeMode value, JsonSerializerOptions o)
+        => writer.WriteStringValue(value.ToString());
+}
+
 public static class SettingsStore
 {
     private static readonly string Dir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Athena");
-    private static readonly string Path_ = Path.Combine(Dir, "settings.json");
+    private static string? _pathOverride; // tests: redirect settings.json to a temp file
+    private static string Path_ => _pathOverride ?? Path.Combine(Dir, "settings.json");
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    /// <summary>Test-only: point the store at another file for the duration
+    /// of the using-block. Static state, so tests using it must not run in
+    /// parallel with other store tests — xUnit serializes within a class.</summary>
+    public static IDisposable UsePathForTests(string path)
+    {
+        _pathOverride = path;
+        return new PathOverride();
+    }
+
+    private sealed class PathOverride : IDisposable
+    {
+        public void Dispose() => _pathOverride = null;
+    }
 
     public static AthenaSettings Load()
     {

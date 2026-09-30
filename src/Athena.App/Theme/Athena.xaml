@@ -3,35 +3,15 @@
                     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
 
     <!--
-      Athena base palette — near-black surfaces, muted text, hairline dividers
-      (shared by every accent variant). ACCENT COLORS LIVE ELSEWHERE:
-      Theme/Accents/Neutral.xaml and Theme/Accents/Warm.xaml define the
-      AthenaAccent* colors, and ThemeManager merges the active one into the
-      application resources at runtime (Settings → Appearance → "Warm accent").
-
-      Everything accent-consuming below MUST use DynamicResource (not
-      StaticResource) — a StaticResource would freeze whichever variant was
+      Athena base palette — ACCENTS + SHARED SHAPES. The surface/text palette
+      (near-black dark vs layered light) lives in Theme/Palettes/Dark.xaml and
+      Light.xaml, merged at runtime by ThemeApplier (ThemeService); the accent
+      colors live in Theme/Accents/Neutral.xaml and Warm.xaml, merged by
+      ThemeManager. Both swap live via DynamicResource — no restart.
+      Everything below consuming a palette or accent brush MUST use
+      DynamicResource: a StaticResource would freeze whichever variant was
       merged first and the swap would silently do nothing.
     -->
-
-    <!-- Surfaces + text (shared by both palettes). -->
-    <Color x:Key="AthenaWindowColor">#FF161616</Color>
-    <Color x:Key="AthenaCardColor">#FF1F1F1F</Color>
-    <Color x:Key="AthenaCardHoverColor">#FF292929</Color>
-    <Color x:Key="AthenaDividerColor">#FF2E2E2E</Color>
-    <SolidColorBrush x:Key="AthenaDividerBrush" Color="{StaticResource AthenaDividerColor}"/>
-
-    <SolidColorBrush x:Key="ApplicationBackgroundColor" Color="{StaticResource AthenaWindowColor}"/>
-    <SolidColorBrush x:Key="ApplicationBackgroundBrush" Color="{StaticResource AthenaWindowColor}"/>
-    <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#FFF3F3F3"/>
-    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#FF9A9A9A"/>
-    <SolidColorBrush x:Key="TextFillColorTertiaryBrush" Color="#FF7A7A7A"/>
-    <SolidColorBrush x:Key="ControlFillColorDefaultBrush" Color="{StaticResource AthenaCardColor}"/>
-    <SolidColorBrush x:Key="ControlFillColorSecondaryBrush" Color="{StaticResource AthenaCardHoverColor}"/>
-    <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="{StaticResource AthenaDividerColor}"/>
-    <SolidColorBrush x:Key="DividerStrokeColorFillBrush" Color="{StaticResource AthenaDividerColor}"/>
-    <SolidColorBrush x:Key="ControlElevationBorderBrush" Color="{StaticResource AthenaDividerColor}"/>
-    <SolidColorBrush x:Key="SystemFillColorSuccessBrush" Color="#FF4C9E63"/>
 
     <!-- Accent indirection — resolved from the active Theme/Accents/*.xaml. -->
     <SolidColorBrush x:Key="AthenaAccentBrush" Color="{DynamicResource AthenaAccentColor}"/>
@@ -80,7 +60,7 @@
 
     <Style x:Key="RowDivider" TargetType="Border">
         <Setter Property="Height" Value="1"/>
-        <Setter Property="Background" Value="{StaticResource AthenaDividerBrush}"/>
+        <Setter Property="Background" Value="{DynamicResource AthenaDividerBrush}"/>
         <Setter Property="Margin" Value="0,10"/>
     </Style>
 </ResourceDictionary>

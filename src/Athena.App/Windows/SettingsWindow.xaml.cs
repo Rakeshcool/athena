@@ -60,8 +60,31 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
             toggle.Checked += (_, _) => Save();
             toggle.Unchecked += (_, _) => Save();
         }
+        foreach (var radio in new[] { ThemeSystemRadio, ThemeLightRadio, ThemeDarkRadio })
+        {
+            radio.Checked += (_, _) => OnThemeRadioChanged();
+        }
         PillTabs.SelectionChanged += (_, _) => ShowPage();
         Closed += (_, _) => Save();
+    }
+
+    /// <summary>Theme radios apply IMMEDIATELY (spec section 2: no restart):
+    /// the choice lands on the shared settings object (so the next full save
+    /// keeps it), persists through the ThemeService, and re-skins every open
+    /// window. Suppressed while LoadSettings checks the boxes — that would
+    /// otherwise re-apply the persisted mode on every window open.</summary>
+    private bool _suppressThemeEvents;
+
+    private ThemeMode? SelectedThemeMode =>
+        ThemeSystemRadio.IsChecked == true ? Athena.App.ThemeMode.System :
+        ThemeLightRadio.IsChecked == true ? Athena.App.ThemeMode.Light :
+        ThemeDarkRadio.IsChecked == true ? Athena.App.ThemeMode.Dark : null;
+
+    private void OnThemeRadioChanged()
+    {
+        if (_suppressThemeEvents || SelectedThemeMode is not { } mode) return;
+        _settings.ThemeMode = mode;
+        ThemeService.Instance.SetTheme(mode);
     }
 
     /// <summary>Pill-tab bar drives five content panels; the TabControl's own
@@ -155,6 +178,15 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
         LaunchAtLoginToggle.IsChecked = LaunchAtLogin.IsEnabled();
         WarmAccentToggle.IsChecked = _settings.WarmAccent;
         SystemAudioToggle.IsChecked = _settings.SystemAudioEnabled;
+        _suppressThemeEvents = true;
+        (ThemeSystemRadio.IsChecked, ThemeLightRadio.IsChecked, ThemeDarkRadio.IsChecked) =
+            _settings.ThemeMode switch
+            {
+                Athena.App.ThemeMode.Light => (false, true, false),
+                Athena.App.ThemeMode.Dark => (false, false, true),
+                _ => (true, false, false),
+            };
+        _suppressThemeEvents = false;
         RefreshDict();
         RefreshProfiles();
         RefreshAbout();
@@ -223,6 +255,10 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
             ?? Athena.Core.LanguageCatalog.Default;
         _settings.WarmAccent = WarmAccentToggle.IsChecked == true;
         _settings.SystemAudioEnabled = SystemAudioToggle.IsChecked == true;
+        // The theme mode rides the shared settings object (a radio click
+        // already persisted + applied it live); included here so a full save
+        // never reverts it to an older value.
+        if (SelectedThemeMode is { } mode) _settings.ThemeMode = mode;
         SettingsStore.Save(_settings);
         ThemeManager.Apply(ThemeManager.FromSettings(_settings.WarmAccent));
         _settingsChanged();

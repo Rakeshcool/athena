@@ -2,7 +2,6 @@ using System.IO;
 using System.Windows;
 using Athena.App.Audio;
 using Athena.App.Interop;
-using Wpf.Ui.Appearance;
 
 namespace Athena.App;
 
@@ -17,14 +16,20 @@ public partial class App : System.Windows.Application
     {
         MigrateLegacyDataDirectory();
 
-        // Athena is a dark-brand app (per the settings mockup): force the dark
-        // palette regardless of the Windows theme so the accent scheme always
-        // holds. SystemThemeWatcher is deliberately NOT used — following the OS
-        // light theme would break the near-black design.
-        ApplicationThemeManager.Apply(ApplicationTheme.Dark, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
-
-        // Accent palette (neutral white vs warm salmon) from settings — merged
-        // BEFORE any window loads, so the first paint is already on-theme.
+        // Theme: the persisted ThemeMode (System default) resolves to the
+        // effective palette BEFORE any window loads, so the first paint is
+        // already on-theme (no light flash). System mode arms a registry
+        // poller so OS light/dark flips are followed live; forced modes
+        // ignore them. Accent palette (neutral vs warm) merges alongside —
+        // the two swaps are orthogonal.
+        ThemeService.Instance.Initialize();
+        // Every FluentWindow re-asserts its backdrop material as it loads —
+        // WPF-UI tints windows at creation, not from the applied app theme,
+        // so a window opened under a forced Light/Dark mode could otherwise
+        // come up on the wrong material (no open windows exist yet at
+        // OnStartup for the theme-change sweep to have fixed).
+        ThemeApplier.RegisterWindowMaterialSync();
+        ThemeService.StartOsThemePolling(ThemeService.Instance);
         ThemeManager.Apply(ThemeManager.FromSettings(SettingsStore.Load().WarmAccent));
 
         // Tray app lifecycle: the main window is a VIEW, not the app's lifetime.
